@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Strategy Simulator</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="ui-overlay">
+    <div id="top-bar">
+      <span id="game-title">STRATEGY SIMULATOR</span>
+      <div id="top-bar-right">
+        <span id="coords-display">0, 0</span>
+        <span id="zoom-display">100%</span>
+      </div>
+    </div>
+
+    <div id="faction-panel">
+      <div id="faction-panel-title">FACTIONS</div>
+      <div id="faction-list"></div>
+    </div>
+
+    <div id="minimap-container">
+      <canvas id="minimap" width="200" height="200"></canvas>
+      <div id="minimap-label">OVERVIEW</div>
+    </div>
+
+    <div id="report-crimson" class="report-box"></div>
+    <div id="report-azure"   class="report-box report-box-right"></div>
+
+    <div id="bottom-bar">
+      <div id="status-left">
+        <span id="tile-info">Hover a tile</span>
+      </div>
+      <div id="status-right">
+        <span>WASD / drag to pan &nbsp;|&nbsp; Scroll to zoom</span>
+      </div>
+    </div>
+  </div>
+
+  <canvas id="game-canvas"></canvas>
+
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>

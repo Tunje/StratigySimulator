@@ -1,0 +1,18 @@
+[     205ms] [ERROR] Failed to load resource: the server responded with a status of 404 (File not found) @ http://localhost:8765/favicon.ico:0
+[ 9369193ms] Unexpected token '{'
+[ 9373489ms] Unexpected token '{'
+[ 9396964ms] Unexpected token '{'
+[ 9398934ms] Unexpected token '{'
+[ 9399965ms] Unexpected token '{'
+[ 9400854ms] Unexpected token '{'
+[ 9401903ms] Unexpected token '{'
+[ 9407730ms] Unexpected token '{'
+[ 9434834ms] Unexpected token '{'
+[11919801ms] TypeError: this._formDefensiveLine is not a function
+    at Captain.update (http://localhost:8765/src/captain.js:707:16)
+    at frame (http://localhost:8765/src/main.js:431:35)
+[22088570ms] The requested module './effects.js' does not provide an export named 'addExplosion'
+[22389014ms] The requested module './effects.js' does not provide an export named 'addExplosion'
+[22390929ms] The requested module './effects.js' does not provide an export named 'addExplosion'
+[22391691ms] The requested module './effects.js' does not provide an export named 'addExplosion'
+[22409282ms] [ERROR] Failed to load resource: the server responded with a status of 404 (File not found) @ http://localhost:8765/favicon.ico:0

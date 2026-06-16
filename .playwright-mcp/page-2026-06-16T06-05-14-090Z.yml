@@ -1,0 +1,104 @@
+- generic [active] [ref=e1]:
+  - generic:
+    - generic:
+      - generic: STRATEGY SIMULATOR
+      - generic:
+        - generic: 128, 128
+        - generic: 100%
+    - generic [ref=e2]:
+      - generic [ref=e3]: FACTIONS
+      - generic [ref=e4]:
+        - generic [ref=e5]:
+          - generic [ref=e7]: Crimson
+          - generic [ref=e9]: Azure
+        - generic [ref=e11]:
+          - generic [ref=e13]: Azure
+          - generic [ref=e15]: Crimson
+    - generic [ref=e18]: OVERVIEW
+    - generic:
+      - generic: CRIMSON CPT
+      - generic:
+        - generic: STATUS
+        - generic: FORMING
+        - generic: TACTIC
+        - generic: ADVANCE TO CENTER
+        - generic: CONTACT
+        - generic: "NO"
+        - generic: KNOWN ENM
+        - generic: "0"
+        - generic: SIGHTINGS
+        - generic: "0"
+      - generic:
+        - generic:
+          - generic: PLT.1
+          - generic: "?"
+          - generic: —
+          - generic: ○
+        - generic:
+          - generic: PLT.2
+          - generic: "?"
+          - generic: —
+          - generic: ○
+        - generic:
+          - generic: PLT.3
+          - generic: "?"
+          - generic: —
+          - generic: ○
+        - generic:
+          - generic: PLT.4
+          - generic: "?"
+          - generic: —
+          - generic: ○
+        - generic:
+          - generic: PLT.5
+          - generic: "?"
+          - generic: —
+          - generic: ○
+      - generic:
+        - generic: SCOUTS
+        - generic: SC.1 SC.2 SC.3
+    - generic:
+      - generic: AZURE CPT
+      - generic:
+        - generic: STATUS
+        - generic: FORMING
+        - generic: TACTIC
+        - generic: ADVANCE TO CENTER
+        - generic: CONTACT
+        - generic: "NO"
+        - generic: KNOWN ENM
+        - generic: "0"
+        - generic: SIGHTINGS
+        - generic: "0"
+      - generic:
+        - generic:
+          - generic: PLT.1
+          - generic: "?"
+          - generic: —
+          - generic: ○
+        - generic:
+          - generic: PLT.2
+          - generic: "?"
+          - generic: —
+          - generic: ○
+        - generic:
+          - generic: PLT.3
+          - generic: "?"
+          - generic: —
+          - generic: ○
+        - generic:
+          - generic: PLT.4
+          - generic: "?"
+          - generic: —
+          - generic: ○
+        - generic:
+          - generic: PLT.5
+          - generic: "?"
+          - generic: —
+          - generic: ○
+      - generic:
+        - generic: SCOUTS
+        - generic: SC.1 SC.2 SC.3
+    - generic:
+      - generic: Hover a tile
+      - generic: WASD / drag to pan | Scroll to zoom

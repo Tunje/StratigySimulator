@@ -42,6 +42,8 @@ export class Soldier {
     this._isMoving       = false;
     this._speedMult      = 0.88 + Math.random() * 0.24; // ±12% speed variance
     this.moveTarget      = null; // { x, y } — set by officer orders
+    this._isATRifleman   = false; // designated anti-tank rifleman for the platoon
+    this._mounted        = false; // true when inside an APC — suppresses all activity
   }
 
   setMoveTarget(x, y) {
@@ -54,7 +56,7 @@ export class Soldier {
 
   get dead()      { return this.state === 'dead';    }
   get injured()   { return this.state === 'injured'; }
-  get active()    { return this.state === 'active';  }
+  get active()    { return this.state === 'active' && !this._mounted; }
   get isUnderFire() { return this._underFireTimer > 0; }
   get isEngaged()   { return this._lockedTarget !== null; }
 
@@ -145,12 +147,26 @@ export class Soldier {
   }
 
   _shoot(target) {
+    target.markUnderFire();
+
+    // Armor penetration check
+    if (target.armorClass && target.armorClass !== 'none') {
+      const penChance = this._isATRifleman
+        ? (target.armorClass === 'heavy' ? 0.25 : 0.50)   // AT rifle: meaningful vs both
+        : (target.armorClass === 'heavy' ? 0.05 : 0.10);  // rifle: 1/20 vs tank, 1/10 vs APC
+      const penetrated = Math.random() < penChance;
+      addBullet(this.x, this.y, target.x, target.y, penetrated);
+      if (penetrated) {
+        addImpact(target.x, target.y);
+        target.state = 'dead'; // armor penetration always kills
+        addDeath(target.x, target.y, target.color);
+      }
+      return;
+    }
+
     const penalty = (this.isUnderFire ? UNDER_FIRE_PENALTY : 0) + (this._isMoving ? MOVE_ACCURACY_PENALTY : 0);
     const hit     = Math.random() < (HIT_CHANCE_BASE - penalty);
-
-    target.markUnderFire();
     addBullet(this.x, this.y, target.x, target.y, hit);
-
     if (hit) {
       addImpact(target.x, target.y);
       if (Math.random() < CHANCE_KILL) {
@@ -163,7 +179,7 @@ export class Soldier {
   }
 
   draw(ctx, camera, showCones = true) {
-    if (this.dead) return;
+    if (this.dead || this._mounted) return;
 
     const zoom = camera.zoom;
     const sx   = (this.x - camera.x) * zoom;
@@ -225,6 +241,16 @@ export class Soldier {
     ctx.lineWidth   = Math.max(1.5, zoom * 1.5);
     ctx.stroke();
 
+    // AT rifleman — orange ring so they're immediately recognisable on the field
+    if (this._isATRifleman) {
+      ctx.globalAlpha = 1;
+      ctx.beginPath();
+      ctx.arc(sx, sy, r + 3 * zoom, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(255,140,0,0.95)';
+      ctx.lineWidth   = Math.max(1.5, zoom * 1.5);
+      ctx.stroke();
+    }
+
     if (this.active) {
       // Head direction dot
       const lookAngle = this.facing + this._headOffset;
@@ -232,7 +258,7 @@ export class Soldier {
       const dotY = sy + Math.sin(lookAngle) * r * 0.55;
       ctx.beginPath();
       ctx.arc(dotX, dotY, r * 0.28, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(0,0,0,0.65)';
+      ctx.fillStyle = this._isATRifleman ? 'rgba(255,140,0,0.85)' : 'rgba(0,0,0,0.65)';
       ctx.fill();
     }
 

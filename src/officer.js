@@ -55,6 +55,9 @@ export class Officer {
     this._soldiersAtContactStart = null;  // for post-battle loss reporting
     this._unknownThreat          = false; // casualty taken with no visual on attacker
     this._prevSoldierStates      = new Map();
+    this._armorContact           = false; // true when enemy armor is in our vision
+    this._armorContactPos        = null;
+    this._mounted                = false; // true when crew is inside an APC
 
     // Combat state (same system as soldiers, shorter range)
     this._headOffset     = 0;
@@ -69,7 +72,7 @@ export class Officer {
 
   attach(soldier) { this.soldiers.push(soldier); return this; }
 
-  get active()    { return this.state === 'active';  }
+  get active()    { return this.state === 'active' && !this._mounted; }
   get dead()      { return this.state === 'dead';    }
   get injured()   { return this.state === 'injured'; }
   get isUnderFire() { return this._underFireTimer > 0; }
@@ -82,13 +85,29 @@ export class Officer {
     if (!this.active) return;
     const angle  = Math.atan2(y - this.y, x - this.x);
     const active = this.soldiers.filter(s => s.active);
-    const fmtn   = lineFormation(x, y, angle, 40, ATTACK_SPREAD, active.length);
+    // Soldiers go to the target; sergeant trails 70px behind so it is never ahead
+    const fmtn   = lineFormation(x, y, angle, 0, ATTACK_SPREAD, active.length);
     active.forEach((s, i) => s.setMoveTarget(fmtn[i].x, fmtn[i].y));
-    this._moveTarget = { x, y };
+    this._moveTarget = {
+      x: x - Math.cos(angle) * 70,
+      y: y - Math.sin(angle) * 70,
+    };
+  }
+
+  recallTo(x, y) {
+    if (!this.active) return;
+    const angle  = Math.atan2(y - this.y, x - this.x);
+    const active = this.soldiers.filter(s => s.active);
+    const fmtn   = lineFormation(x, y, angle, 0, ATTACK_SPREAD, active.length);
+    active.forEach((s, i) => s.setMoveTarget(fmtn[i].x, fmtn[i].y));
+    this._forcedMoveTarget = {
+      x: x - Math.cos(angle) * 70,
+      y: y - Math.sin(angle) * 70,
+    };
   }
 
   update(dt, allUnits, factionMgr) {
-    if (!this.active) return;
+    if (!this.active) return; // covers dead, injured-inactive, and mounted
     this._isMoving = false;
     this._checkCasualties();
 
@@ -96,25 +115,25 @@ export class Officer {
     if (this._shootCooldown  > 0) this._shootCooldown  -= dt;
 
     // ── Movement ──────────────────────────────────────────────────────────────
-    if (this._moveTarget) {
-      const hasTroops    = this.soldiers.some(s => s.active);
-      const enemiesKnown = this._hasContact && this._knownActiveEnemies > 0;
+    const moveTgt      = this._forcedMoveTarget || this._moveTarget;
+    const isForced     = !!this._forcedMoveTarget;
+    const hasTroops    = this.soldiers.some(s => s.active);
+    const enemiesKnown = this._hasContact && this._knownActiveEnemies > 0;
 
-      // Don't advance if enemies are known, or if all soldiers are gone
-      if (!enemiesKnown && hasTroops) {
-        const dx   = this._moveTarget.x - this.x;
-        const dy   = this._moveTarget.y - this.y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist > ARRIVE_THRESHOLD) {
-          this.x        += (dx / dist) * MOVE_SPEED * this._speedMult * dt;
-          this.y        += (dy / dist) * MOVE_SPEED * this._speedMult * dt;
-          this.facing    = Math.atan2(dy, dx);
-          this._isMoving = true;
-        } else {
-          this.x = this._moveTarget.x;
-          this.y = this._moveTarget.y;
-          this._moveTarget = null;
-        }
+    if (moveTgt && (isForced || (!enemiesKnown && hasTroops))) {
+      const dx   = moveTgt.x - this.x;
+      const dy   = moveTgt.y - this.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist > ARRIVE_THRESHOLD) {
+        this.x        += (dx / dist) * MOVE_SPEED * this._speedMult * dt;
+        this.y        += (dy / dist) * MOVE_SPEED * this._speedMult * dt;
+        this.facing    = Math.atan2(dy, dx);
+        this._isMoving = true;
+      } else {
+        this.x = moveTgt.x;
+        this.y = moveTgt.y;
+        if (isForced) this._forcedMoveTarget = null;
+        else          this._moveTarget       = null;
       }
     }
 
@@ -166,6 +185,29 @@ export class Officer {
       this._assessTimer = rand(ASSESS_MIN, ASSESS_MAX);
     }
 
+    // ── Reintegrate revived soldiers ──────────────────────────────────────────
+    // Only pull idle soldiers in when the sergeant itself has stopped — never
+    // while marching, or fast-arriving soldiers get yanked backward past us.
+    const sgtStopped = !this._moveTarget && !this._forcedMoveTarget;
+    if (this._knownActiveEnemies === 0 && sgtStopped) {
+      this._reintegrateTimer = (this._reintegrateTimer || 0) - dt;
+      if (this._reintegrateTimer <= 0) {
+        this._reintegrateTimer = 5.0;
+        const idle = this.soldiers.filter(s => s.active && !s.moveTarget && !s._lockedTarget);
+        if (idle.length > 0) {
+          // Soldiers form up 70px ahead of sergeant so sergeant stays behind
+          const fmtn = lineFormation(
+            this.x + Math.cos(this.facing) * 70,
+            this.y + Math.sin(this.facing) * 70,
+            this.facing, 0, ATTACK_SPREAD, idle.length
+          );
+          idle.forEach((s, i) => s.setMoveTarget(fmtn[i].x, fmtn[i].y));
+        }
+      }
+    } else {
+      this._reintegrateTimer = 5.0;
+    }
+
     // ── Radio report ──────────────────────────────────────────────────────────
     this._reportTimer -= dt;
     if (this._reportTimer <= 0) {
@@ -190,18 +232,21 @@ export class Officer {
     }
 
     this.lastReport = {
-      tactic:        this._tactic,
-      troops:        active.length,
+      tactic:          this._tactic,
+      troops:          active.length,
       total,
-      opposition:    this._knownActiveEnemies,
-      hasContact:    this._hasContact,
-      distance:      distanceToTarget,
-      troopsLost:    this._soldiersAtContactStart != null
-                       ? Math.max(0, this._soldiersAtContactStart - active.length)
-                       : 0,
-      position:      { x: this.x, y: this.y },
-      enemyPosition: this._enemyCentroid ? { ...this._enemyCentroid } : null,
-      time:          new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+      opposition:      this._knownActiveEnemies,
+      hasContact:      this._hasContact,
+      distance:        distanceToTarget,
+      troopsLost:      this._soldiersAtContactStart != null
+                         ? Math.max(0, this._soldiersAtContactStart - active.length)
+                         : 0,
+      position:        { x: this.x, y: this.y },
+      enemyPosition:   this._enemyCentroid ? { ...this._enemyCentroid } : null,
+      hasATCapability: this.soldiers.some(s => s.active && s._isATRifleman),
+      hasArmorContact: this._armorContact,
+      armorContactPos: this._armorContactPos ? { ...this._armorContactPos } : null,
+      time:            new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
     };
   }
 
@@ -278,10 +323,29 @@ export class Officer {
       if (this.commandingOfficer) this.commandingOfficer.receiveContactReport(this);
     }
 
-    if (activeEnemies.length === 0) return;
+    if (activeEnemies.length === 0) {
+      this._armorContact    = false;
+      this._armorContactPos = null;
+      return;
+    }
 
     if (!this._hasContact) this._hasContact = true;
     this._enemyCentroid = centroid(activeEnemies);
+
+    // Armor contact — flash report on first detection so lieutenant knows immediately
+    const armorEnemies = activeEnemies.filter(e => e.armorClass && e.armorClass !== 'none');
+    if (armorEnemies.length > 0) {
+      const wasArmor = this._armorContact;
+      this._armorContact    = true;
+      this._armorContactPos = centroid(armorEnemies);
+      if (!wasArmor) {
+        this._generateReport();
+        if (this.commandingOfficer) this.commandingOfficer.receiveContactReport(this);
+      }
+    } else {
+      this._armorContact    = false;
+      this._armorContactPos = null;
+    }
 
     const activeFriendlies = this.soldiers.filter(s => s.active).length + 1;
 
@@ -308,8 +372,13 @@ export class Officer {
     const active = this.soldiers.filter(s => s.active);
 
     if (this._tactic === 'attack') {
-      const fmtn = lineFormation(this.x, this.y, toEnemy, ATTACK_FRONT, ATTACK_SPREAD, active.length);
-      active.forEach((s, i) => s.setMoveTarget(fmtn[i].x, fmtn[i].y));
+      // AT rifleman goes in the front-centre slot so they close range on armor first
+      const atIdx = active.findIndex(s => s._isATRifleman);
+      const ordered = atIdx > 0
+        ? [active[atIdx], ...active.filter((_, i) => i !== atIdx)]
+        : active;
+      const fmtn = lineFormation(this.x, this.y, toEnemy, ATTACK_FRONT, ATTACK_SPREAD, ordered.length);
+      ordered.forEach((s, i) => s.setMoveTarget(fmtn[i].x, fmtn[i].y));
 
     } else if (this._tactic === 'fallback') {
       const awayAngle  = toEnemy + Math.PI;
@@ -354,7 +423,7 @@ export class Officer {
   }
 
   draw(ctx, camera, showCones = true) {
-    if (this.dead) return;
+    if (this.dead || this._mounted) return;
 
     const zoom = camera.zoom;
     const sx   = (this.x - camera.x) * zoom;
@@ -403,11 +472,11 @@ export class Officer {
       }
     }
 
-    // Rank ring
+    // Rank ring — tight and thin
     ctx.beginPath();
-    ctx.arc(sx, sy, r + 3 * zoom, 0, Math.PI * 2);
-    ctx.strokeStyle = '#000';
-    ctx.lineWidth   = Math.max(1, zoom);
+    ctx.arc(sx, sy, r + 1.5 * zoom, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+    ctx.lineWidth   = 0.75;
     ctx.stroke();
 
     // Body

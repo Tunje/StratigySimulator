@@ -6,6 +6,9 @@ import { Soldier } from './soldier.js';
 import { Officer } from './officer.js';
 import { Lieutenant } from './lieutenant.js';
 import { Captain, Scout, Medic } from './captain.js';
+import { Tank } from './tank.js';
+import { APC, MechanizedPlatoon } from './apc.js';
+import { ArtilleryCannon, Spotter } from './artillery.js';
 import { updateEffects, drawEffects } from './effects.js';
 
 // ── Elements ──────────────────────────────────────────────────────────────────
@@ -63,6 +66,11 @@ function makeSide(ltX, sgtX, solX, cy, factionId, facing, color) {
       sgts.push(sgt);
     }
 
+    // One AT rifleman per platoon — first soldier of the first squad
+    if (lt.sergeants.length > 0 && lt.sergeants[0].soldiers.length > 0) {
+      lt.sergeants[0].soldiers[0]._isATRifleman = true;
+    }
+
     lts.push(lt);
   }
 
@@ -70,29 +78,7 @@ function makeSide(ltX, sgtX, solX, cy, factionId, facing, color) {
 }
 
 // Crimson deploys near the LEFT edge; Azure near the RIGHT edge
-// Map is MAP_W = 8192px; CX = 4096
-const { lts: crimsonLts, sgts: crimsonSgts } = makeSide(CX - 3500, CX - 3300, CX - 3100, CY, 'crimson', 0,       cColor);
-const { lts: azureLts,   sgts: azureSgts   } = makeSide(CX + 3500, CX + 3300, CX + 3100, CY, 'azure',   Math.PI, aColor);
-
-const crimsonScouts = [
-  new Scout(CX - 3700, CY - 80, 'crimson', 0,       cColor),
-  new Scout(CX - 3700, CY + 80, 'crimson', 0,       cColor),
-  new Scout(CX - 3700, CY,      'crimson', 0,       cColor),
-];
-const crimsonCpt = new Captain(CX - 3800, CY, 'crimson', 0, cColor);
-crimsonLts.forEach(lt => crimsonCpt.attach(lt));
-crimsonScouts.forEach(s => crimsonCpt.attachScout(s));
-crimsonCpt.setObjective(CX, CY, 'center');
-
-const azureScouts = [
-  new Scout(CX + 3700, CY - 80, 'azure', Math.PI, aColor),
-  new Scout(CX + 3700, CY + 80, 'azure', Math.PI, aColor),
-  new Scout(CX + 3700, CY,      'azure', Math.PI, aColor),
-];
-const azureCpt = new Captain(CX + 3800, CY, 'azure', Math.PI, aColor);
-azureLts.forEach(lt => azureCpt.attach(lt));
-azureScouts.forEach(s => azureCpt.attachScout(s));
-azureCpt.setObjective(CX, CY, 'center');
+// Map is MAP_W * 32 = 8192px wide; CX = 4096
 
 // ── Command squads (bodyguard — flank the captain, move with him) ─────────────
 function makeCommandSquad(cpt, cx, cy, factionId, facing, color) {
@@ -104,29 +90,113 @@ function makeCommandSquad(cpt, cx, cy, factionId, facing, color) {
   return sgt;
 }
 
-const crimsonCmdSgts = [
-  makeCommandSquad(crimsonCpt, CX - 3800, CY - 60, 'crimson', 0,       cColor),
-  makeCommandSquad(crimsonCpt, CX - 3800, CY + 60, 'crimson', 0,       cColor),
-];
-const azureCmdSgts = [
-  makeCommandSquad(azureCpt, CX + 3800, CY - 60, 'azure', Math.PI, aColor),
-  makeCommandSquad(azureCpt, CX + 3800, CY + 60, 'azure', Math.PI, aColor),
-];
 
-// ── Medics (one per captain, follows and revives injured friendlies) ──────────
-const crimsonMedic = new Medic(CX - 3800, CY + 30, 'crimson', 0,       cColor);
-const azureMedic   = new Medic(CX + 3800, CY + 30, 'azure',   Math.PI, aColor);
-crimsonMedic._captain = crimsonCpt;
-azureMedic._captain   = azureCpt;
-const medics = [crimsonMedic, azureMedic];
+// ── Attachments (each captain gets one random attachment) ─────────────────────
+// Returns { type, units } where units is the flat list for allUnits + draw loops.
+function createAttachment(cpt, x, y, factionId, facing, color) {
+  const roll = Math.floor(Math.random() * 3);
+
+  if (roll === 0) {
+    // Tank platoon — 3 tanks spread perpendicular to facing, one LT_SPACING apart
+    const tanks = [-LT_SPACING, 0, LT_SPACING].map(off =>
+      new Tank(x, y + off, factionId, facing, color)
+    );
+    cpt.setAttachment('tanks', tanks);
+    return tanks;
+  }
+
+  if (roll === 1) {
+    // Mechanized platoon — 4 APCs each with a sergeant + soldiers
+    const platoon = new MechanizedPlatoon(x, y, factionId, facing, color);
+    // Attach a sergeant squad to each troop APC (skip command APC at index 0)
+    for (let i = 1; i < platoon.apcs.length; i++) {
+      const apc = platoon.apcs[i];
+      const sgt = new Officer(apc.x, apc.y, factionId, facing, color);
+      for (let j = 0; j < SOL_COUNT; j++) {
+        sgt.attach(new Soldier(apc.x, apc.y + (j - 1) * SOL_SPACING, factionId, facing, color));
+      }
+      apc._sergeant = sgt;
+      sgt._mounted  = true;
+      sgt.soldiers.forEach(s => { s._mounted = true; });
+    }
+    const allApcUnits = platoon.allUnits();
+    cpt.setAttachment('mechanized', [platoon, ...allApcUnits]);
+    return allApcUnits; // platoon wrapper isn't a drawn/updated unit itself
+  }
+
+  // roll === 2: Artillery section — 2 cannons + 1 spotter
+  // Cannons deploy perpendicular to the march axis so they stay on the map
+  const perp    = facing + Math.PI / 2;
+  const cannon1 = new ArtilleryCannon(x + Math.cos(perp) * SGT_SPACING * 2,  y + Math.sin(perp) * SGT_SPACING * 2,  factionId, facing, color);
+  const cannon2 = new ArtilleryCannon(x - Math.cos(perp) * SGT_SPACING * 2,  y - Math.sin(perp) * SGT_SPACING * 2,  factionId, facing, color);
+  const spotter = new Spotter(x + Math.cos(facing) * SGT_SPACING * 2, y + Math.sin(facing) * SGT_SPACING * 2, factionId, facing, color);
+  spotter._captain = cpt;
+  cpt.attachScout(spotter);
+  cpt.setAttachment('artillery', [cannon1, cannon2, spotter]);
+  return [cannon1, cannon2, spotter]; // all three need to be in the game loop
+}
+
+// ── Company factory — wraps all per-company unit creation ────────────────────
+function makeCompany(cy, factionId, facing, color) {
+  const sign = factionId === 'crimson' ? -1 : 1;
+  const cptX = CX + sign * 3800;
+  const sctX = CX + sign * 3700;
+  const ltX  = CX + sign * 3500;
+  const sgtX = CX + sign * 3300;
+  const solX = CX + sign * 3100;
+
+  const { lts, sgts } = makeSide(ltX, sgtX, solX, cy, factionId, facing, color);
+
+  const compScouts = [
+    new Scout(sctX, cy - 80, factionId, facing, color),
+    new Scout(sctX, cy + 80, factionId, facing, color),
+    new Scout(sctX, cy,      factionId, facing, color),
+  ];
+
+  const cpt = new Captain(cptX, cy, factionId, facing, color);
+  lts.forEach(lt => cpt.attach(lt));
+  compScouts.forEach(s => cpt.attachScout(s));
+  cpt.setObjective(CX, cy, 'center');
+
+  const cmdSgts = [
+    makeCommandSquad(cpt, cptX, cy - 60, factionId, facing, color),
+    makeCommandSquad(cpt, cptX, cy + 60, factionId, facing, color),
+  ];
+
+  const attachUnits    = createAttachment(cpt, cptX, cy, factionId, facing, color);
+  const compAttachSgts = attachUnits.filter(u => u instanceof Officer);
+  const compPureAttach = attachUnits.filter(u => !(u instanceof Officer) && !(u instanceof Soldier));
+
+  const medic = new Medic(cptX, cy + 30, factionId, facing, color);
+  medic._captain = cpt;
+
+  const allCompSgts  = [...sgts, ...cmdSgts, ...compAttachSgts];
+  const compSoldiers = allCompSgts.flatMap(o => o.soldiers);
+
+  return { cpt, lts, sgts: allCompSgts, scouts: compScouts,
+           soldiers: compSoldiers, pureAttach: compPureAttach, medic };
+}
+
+// ── Mega battle — 3 strips × 2 factions, each company fights toward its strip center ─
+const STRIP_SEP        = 1400;
+const stripOffsets     = [-STRIP_SEP, 0, STRIP_SEP];
+const crimsonCompanies = stripOffsets.map(dy => makeCompany(CY + dy, 'crimson', 0,       cColor));
+const azureCompanies   = stripOffsets.map(dy => makeCompany(CY + dy, 'azure',   Math.PI, aColor));
+const allCompanies     = [...crimsonCompanies, ...azureCompanies];
 
 // ── Flat lists for game loop ──────────────────────────────────────────────────
-const captains    = [crimsonCpt, azureCpt];
-const scouts      = [...crimsonScouts, ...azureScouts];
-let officers      = [...crimsonSgts, ...azureSgts, ...crimsonCmdSgts, ...azureCmdSgts];
-const lieutenants = [...crimsonLts, ...azureLts];
-const allSoldiers = officers.flatMap(o => o.soldiers);
-const allUnits    = [...allSoldiers, ...scouts, ...officers, ...lieutenants, ...captains, ...medics];
+const captains        = allCompanies.map(c => c.cpt);
+const lieutenants     = allCompanies.flatMap(c => c.lts);
+let officers          = allCompanies.flatMap(c => c.sgts);
+const scouts          = allCompanies.flatMap(c => c.scouts);
+const allSoldiers     = allCompanies.flatMap(c => c.soldiers);
+const pureAttachUnits = allCompanies.flatMap(c => c.pureAttach);
+const medics          = allCompanies.map(c => c.medic);
+const allUnits        = [...allSoldiers, ...scouts, ...officers, ...lieutenants, ...captains, ...medics, ...pureAttachUnits];
+
+// Center companies — used for the two report panels
+const crimsonCpt = crimsonCompanies[1].cpt;
+const azureCpt   = azureCompanies[1].cpt;
 
 function integratePromotions() {
   for (const lt of lieutenants) {
@@ -135,7 +205,14 @@ function integratePromotions() {
     for (const sgt of newSgts) {
       officers.push(sgt);
       allUnits.push(sgt);
-      // soldiers already exist in allSoldiers/allUnits from original squad
+    }
+  }
+  for (const cpt of captains) {
+    if (cpt._promotedScouts.length === 0) continue;
+    const newScouts = cpt._promotedScouts.splice(0);
+    for (const s of newScouts) {
+      scouts.push(s);
+      allUnits.push(s);
     }
   }
 }
@@ -148,8 +225,17 @@ camera.centerOn(CX, CY, canvas.width, canvas.height);
 let selectedOfficer   = null;
 let pendingDestMarker = null;
 
-function handleClick(_sx, _sy) {
-  // Captains operate autonomously; no click orders
+function handleClick(sx, sy) {
+  const wx = camera.x + sx / camera.zoom;
+  const wy = camera.y + sy / camera.zoom;
+  const HIT = 24 / camera.zoom; // hit radius in world px
+
+  const hit = captains.find(c => {
+    const dx = c.x - wx, dy = c.y - wy;
+    return dx * dx + dy * dy < HIT * HIT;
+  });
+
+  selectedOfficer = hit || null;
 }
 
 function drawSelectionOverlay() {
@@ -172,7 +258,7 @@ function drawSelectionOverlay() {
     ctx.restore();
   }
 
-  // Selected officer highlight
+  // Selected captain highlight + contact points
   if (selectedOfficer) {
     const sx    = (selectedOfficer.x - camera.x) * camera.zoom;
     const sy    = (selectedOfficer.y - camera.y) * camera.zoom;
@@ -183,6 +269,43 @@ function drawSelectionOverlay() {
     ctx.beginPath();
     ctx.arc(sx, sy, 16 * camera.zoom, 0, Math.PI * 2);
     ctx.stroke();
+
+    // Draw contact points if this is a captain
+    if (selectedOfficer._sightings) {
+      const now = Date.now() / 1000;
+      for (const s of selectedOfficer._sightings) {
+        const age  = now - s.time;
+        const alpha = Math.max(0, 1 - age / 30);
+        const px   = (s.x - camera.x) * camera.zoom;
+        const py   = (s.y - camera.y) * camera.zoom;
+
+        // Line from captain to contact point
+        ctx.beginPath();
+        ctx.moveTo(sx, sy);
+        ctx.lineTo(px, py);
+        ctx.strokeStyle = `rgba(255, 80, 80, ${alpha * 0.3})`;
+        ctx.lineWidth   = 1;
+        ctx.setLineDash([4, 6]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Contact dot — larger and brighter than the captain's own draw
+        ctx.beginPath();
+        ctx.arc(px, py, Math.max(4, 6 * camera.zoom), 0, Math.PI * 2);
+        ctx.fillStyle   = `rgba(255, 60, 60, ${alpha * 0.9})`;
+        ctx.fill();
+        ctx.strokeStyle = `rgba(255, 200, 200, ${alpha})`;
+        ctx.lineWidth   = 1.5;
+        ctx.stroke();
+
+        // Age label
+        ctx.fillStyle = `rgba(255,220,220,${alpha})`;
+        ctx.font      = `${Math.max(9, 10 * camera.zoom)}px monospace`;
+        ctx.textAlign = 'center';
+        ctx.fillText(`${Math.round(age)}s`, px, py - 8 * camera.zoom);
+      }
+    }
+
     ctx.restore();
   }
 }
@@ -374,13 +497,14 @@ function frame(timestamp) {
 
   integratePromotions();
 
-  // Top-down update: captains → lieutenants → sergeants → soldiers → scouts
-  for (const c  of captains)    c.update(dt, allUnits, factions);
-  for (const lt of lieutenants) lt.update(dt, allUnits, factions);
-  for (const o  of officers)    o.update(dt, allUnits, factions);
-  for (const s  of allSoldiers) s.update(dt, allUnits, factions);
-  for (const s  of scouts)      s.update(dt, allUnits, factions);
-  for (const m  of medics)      m.update(dt, allUnits, factions);
+  // Top-down update: captains → lieutenants → sergeants → soldiers → scouts → attachments
+  for (const c  of captains)         c.update(dt, allUnits, factions);
+  for (const lt of lieutenants)      lt.update(dt, allUnits, factions);
+  for (const o  of officers)         o.update(dt, allUnits, factions);
+  for (const s  of allSoldiers)      s.update(dt, allUnits, factions);
+  for (const s  of scouts)           s.update(dt, allUnits, factions);
+  for (const m  of medics)           m.update(dt, allUnits, factions);
+  for (const u  of pureAttachUnits)  u.update(dt, allUnits, factions);
 
   updateEffects(dt);
 
@@ -395,13 +519,14 @@ function frame(timestamp) {
   const activeCount = allUnits.filter(u => u.active).length;
   const showCones   = activeCount < 200;
 
-  // Front to back: soldiers → scouts → sergeants → lieutenants → captains
-  for (const s  of allSoldiers)  s.draw(ctx, camera, showCones);
-  for (const s  of scouts)       s.draw(ctx, camera, showCones);
-  for (const m  of medics)       m.draw(ctx, camera, showCones);
-  for (const o  of officers)     o.draw(ctx, camera, showCones);
-  for (const lt of lieutenants)  lt.draw(ctx, camera, showCones);
-  for (const c  of captains)     c.draw(ctx, camera, showCones);
+  // Front to back: soldiers → scouts → attachment vehicles → sergeants → lieutenants → captains
+  for (const s  of allSoldiers)      s.draw(ctx, camera, showCones);
+  for (const s  of scouts)           s.draw(ctx, camera, showCones);
+  for (const m  of medics)           m.draw(ctx, camera, showCones);
+  for (const u  of pureAttachUnits)  u.draw(ctx, camera, showCones);
+  for (const o  of officers)         o.draw(ctx, camera, showCones);
+  for (const lt of lieutenants)      lt.draw(ctx, camera, showCones);
+  for (const c  of captains)         c.draw(ctx, camera, showCones);
 
   drawEffects(ctx, camera);
   drawSelectionOverlay();

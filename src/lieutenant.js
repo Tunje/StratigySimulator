@@ -59,6 +59,8 @@ export class Lieutenant {
     this.lastReport        = null;
     this.commandingOfficer = null;
     this._prevContactState = false;
+    this._armorContact     = false;
+    this._armorContactPos  = null;
 
     this._cachedAllUnits   = null;
     this._cachedFactionMgr = null;
@@ -88,16 +90,25 @@ export class Lieutenant {
 
   setMoveTarget(x, y) {
     if (!this.active) return;
-    const angle       = Math.atan2(y - this.y, x - this.x);
+    const angle           = Math.atan2(y - this.y, x - this.x);
     const activeSergeants = this.sergeants.filter(s => s.active);
-
-    // Sergeants go ahead of the ordered position; lieutenant holds at the destination
-    const aheadX = x + Math.cos(angle) * 80;
-    const aheadY = y + Math.sin(angle) * 80;
-    const positions = spreadPositions(aheadX, aheadY, angle, SQUAD_SPREAD, activeSergeants.length);
+    const aheadX          = x + Math.cos(angle) * 80;
+    const aheadY          = y + Math.sin(angle) * 80;
+    const positions       = spreadPositions(aheadX, aheadY, angle, SQUAD_SPREAD, activeSergeants.length);
     activeSergeants.forEach((sgt, i) => sgt.setMoveTarget(positions[i].x, positions[i].y));
-
     this._moveTarget = { x, y };
+  }
+
+  // Captain recall — bypasses the contact movement guard so lts consolidate even under fire
+  recallTo(x, y) {
+    if (!this.active) return;
+    this._forcedMoveTarget = { x, y };
+    const angle           = Math.atan2(y - this.y, x - this.x);
+    const activeSergeants = this.sergeants.filter(s => s.active);
+    const aheadX          = x + Math.cos(angle) * 80;
+    const aheadY          = y + Math.sin(angle) * 80;
+    const positions       = spreadPositions(aheadX, aheadY, angle, SQUAD_SPREAD, activeSergeants.length);
+    activeSergeants.forEach((sgt, i) => sgt.recallTo(positions[i].x, positions[i].y));
   }
 
   update(dt, allUnits, factionMgr) {
@@ -110,24 +121,25 @@ export class Lieutenant {
     if (this._underFireTimer > 0) this._underFireTimer -= dt;
     if (this._shootCooldown  > 0) this._shootCooldown  -= dt;
 
-    // ── Movement (same hold rules as sergeant) ────────────────────────────────
-    if (this._moveTarget) {
-      const hasTroops    = this.sergeants.some(s => s.active);
-      const enemiesKnown = this._hasContact && this._knownActiveEnemies > 0;
+    // ── Movement ──────────────────────────────────────────────────────────────
+    const moveTgt      = this._forcedMoveTarget || this._moveTarget;
+    const isForced     = !!this._forcedMoveTarget;
+    const hasTroops    = this.sergeants.some(s => s.active);
+    const enemiesKnown = this._hasContact && this._knownActiveEnemies > 0;
 
-      if (!enemiesKnown && hasTroops) {
-        const dx   = this._moveTarget.x - this.x;
-        const dy   = this._moveTarget.y - this.y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist > ARRIVE_THRESHOLD) {
-          this.x      += (dx / dist) * MOVE_SPEED * dt;
-          this.y      += (dy / dist) * MOVE_SPEED * dt;
-          this.facing  = Math.atan2(dy, dx);
-        } else {
-          this.x = this._moveTarget.x;
-          this.y = this._moveTarget.y;
-          this._moveTarget = null;
-        }
+    if (moveTgt && (isForced || (!enemiesKnown && hasTroops))) {
+      const dx   = moveTgt.x - this.x;
+      const dy   = moveTgt.y - this.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist > ARRIVE_THRESHOLD) {
+        this.x      += (dx / dist) * MOVE_SPEED * dt;
+        this.y      += (dy / dist) * MOVE_SPEED * dt;
+        this.facing  = Math.atan2(dy, dx);
+      } else {
+        this.x = moveTgt.x;
+        this.y = moveTgt.y;
+        if (isForced) this._forcedMoveTarget = null;
+        else          this._moveTarget       = null;
       }
     }
 
@@ -189,6 +201,30 @@ export class Lieutenant {
     if (this._reportTimer <= 0) {
       this._generateReport();
       this._reportTimer = rand(10.0, 18.0);
+    }
+
+    // ── Reintegrate revived sergeants ─────────────────────────────────────────
+    // Only pull idle sergeants in when the LT itself has stopped — never while
+    // marching, or sergeants (and their soldiers) get yanked backward past the LT.
+    const ltStopped = !this._moveTarget && !this._forcedMoveTarget;
+    if (this._knownActiveEnemies === 0 && ltStopped) {
+      this._reintegrateTimer = (this._reintegrateTimer || 0) - dt;
+      if (this._reintegrateTimer <= 0) {
+        this._reintegrateTimer = 5.0;
+        const idle = this.sergeants.filter(s => s.active && !s._moveTarget && !s._forcedMoveTarget && !s._lockedTarget);
+        if (idle.length > 0) {
+          const perp = this.facing + Math.PI / 2;
+          idle.forEach((sgt, i) => {
+            const offset = (i - (idle.length - 1) / 2) * SQUAD_SPREAD;
+            sgt.setMoveTarget(
+              this.x + Math.cos(perp) * offset,
+              this.y + Math.sin(perp) * offset,
+            );
+          });
+        }
+      }
+    } else {
+      this._reintegrateTimer = 5.0;
     }
   }
 
@@ -268,6 +304,33 @@ export class Lieutenant {
         engaged.x - Math.cos(angle) * 60,
         engaged.y - Math.sin(angle) * 60
       );
+    }
+
+    // ── Armor contact — aggregate and flash-report up the chain ──────────────
+    const armorSgts = activeSgts.filter(s => s.lastReport?.hasArmorContact);
+    if (armorSgts.length > 0) {
+      const wasArmor = this._armorContact;
+      this._armorContact    = true;
+      this._armorContactPos = armorSgts[0].lastReport.armorContactPos || this._armorContactPos;
+      if (!wasArmor) {
+        // Immediate flash up to captain
+        this._generateReport();
+        if (this.commandingOfficer) this.commandingOfficer.receiveContactReport(this);
+      }
+      // Send the AT-capable sergeant toward the armor contact
+      if (this._armorContactPos) {
+        const atSgt = activeSgts.find(s => s.lastReport?.hasATCapability);
+        if (atSgt && !atSgt._moveTarget && !atSgt._forcedMoveTarget) {
+          const pos   = this._armorContactPos;
+          const angle = Math.atan2(pos.y - atSgt.y, pos.x - atSgt.x);
+          atSgt.setMoveTarget(
+            pos.x - Math.cos(angle) * 60,
+            pos.y - Math.sin(angle) * 60,
+          );
+        }
+      }
+    } else {
+      this._armorContact = false;
     }
 
     // ── Overall tactic ────────────────────────────────────────────────────────
@@ -445,14 +508,16 @@ export class Lieutenant {
       : (activeSgts.find(s => s.lastReport?.enemyPosition)?.lastReport?.enemyPosition ?? null);
 
     this.lastReport = {
-      tactic:        this._tactic,
-      squads:        activeSgts.length,
-      totalSquads:   this.sergeants.length,
-      troops:        totalTroops,
-      opposition:    totalOpposition,
-      hasContact:    this._hasContact,
-      enemyPosition: enemyPos,
-      time:          new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+      tactic:          this._tactic,
+      squads:          activeSgts.length,
+      totalSquads:     this.sergeants.length,
+      troops:          totalTroops,
+      opposition:      totalOpposition,
+      hasContact:      this._hasContact,
+      enemyPosition:   enemyPos,
+      hasArmorContact: this._armorContact,
+      armorContactPos: this._armorContactPos ? { ...this._armorContactPos } : null,
+      time:            new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
     };
   }
 
@@ -505,17 +570,17 @@ export class Lieutenant {
       }
     }
 
-    // Double rank ring
+    // Double rank ring — tight and thin
     ctx.beginPath();
-    ctx.arc(sx, sy, r + 5 * zoom, 0, Math.PI * 2);
-    ctx.strokeStyle = '#000';
-    ctx.lineWidth   = Math.max(1, zoom);
+    ctx.arc(sx, sy, r + 3 * zoom, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+    ctx.lineWidth   = 0.75;
     ctx.stroke();
 
     ctx.beginPath();
-    ctx.arc(sx, sy, r + 3 * zoom, 0, Math.PI * 2);
+    ctx.arc(sx, sy, r + 1.5 * zoom, 0, Math.PI * 2);
     ctx.strokeStyle = this.color;
-    ctx.lineWidth   = Math.max(0.5, zoom * 0.5);
+    ctx.lineWidth   = 0.75;
     ctx.stroke();
 
     // Body

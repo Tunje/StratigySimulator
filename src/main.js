@@ -10,6 +10,7 @@ import { Tank } from './tank.js';
 import { APC, MechanizedPlatoon } from './apc.js';
 import { ArtilleryCannon, Spotter } from './artillery.js';
 import { Corporal, StaffSergeant, RadioOperator } from './operatives.js';
+import { StrategicAdvisor } from './advisor.js';
 import { updateEffects, drawEffects } from './effects.js';
 import { SQUAD_SIZE, PLATOON_SIZE, COMPANY_SIZE } from './config.js';
 
@@ -182,6 +183,10 @@ function makeCompany(cy, factionId, facing, color) {
 
   const medic = new Medic(cptX, cy + 30, factionId, facing, color);
   medic._captain = cpt;
+
+  const advisor = new StrategicAdvisor(cptX, cy - 30, factionId, facing, color);
+  cpt.attachAdvisor(advisor);
+  operatives.push(advisor);
 
   const allCompSgts  = [...sgts, ...cmdSgts, ...compAttachSgts];
   const compSoldiers = allCompSgts.flatMap(o => o.soldiers);
@@ -498,6 +503,17 @@ function updateReportPanel(factionId, cpt) {
     <div class="kb-squads">${ltRows}</div>
     <div class="kb-divider"></div>
     <div class="kb-main"><span class="report-label">SCOUTS</span><span class="report-value">${scoutStatus}</span></div>
+    ${(() => {
+      const rec = cpt._advisorRecommendation;
+      if (!rec) return '';
+      const pct = Math.round(rec.confidence * 100);
+      const cls = rec.confidence >= 0.80 ? 'kb-status-hot' : 'kb-status-warn';
+      return `<div class="kb-divider"></div>
+    <div class="kb-main">
+      <span class="report-label">ADVISOR</span><span class="${cls}">${rec.strategy.toUpperCase()} ${pct}%</span>
+      <span class="report-label">REASON</span><span class="report-value">${rec.reason}</span>
+    </div>`;
+    })()}
   `;
 }
 

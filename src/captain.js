@@ -493,6 +493,10 @@ export class Captain {
 
     this._cachedAllUnits   = null;
     this._cachedFactionMgr = null;
+
+    // Strategic Advisor
+    this._advisor                = null;
+    this._advisorRecommendation  = null;
   }
 
   attach(lieutenant) {
@@ -515,6 +519,12 @@ export class Captain {
   attachRadioOperator(ro) {
     this.radioOperator = ro;
     ro.commandingOfficer = this;
+    return this;
+  }
+
+  attachAdvisor(advisor) {
+    this._advisor = advisor;
+    advisor.commandingOfficer = this;
     return this;
   }
 
@@ -1664,6 +1674,16 @@ export class Captain {
     return false; // all flanking routes are blocked — envelop is no longer viable
   }
 
+  _applyAdvisorIfConfident() {
+    const rec = this._advisorRecommendation;
+    if (!rec || rec.confidence < 0.75) return false;
+    if      (rec.strategy === 'assault') { this._battleStrategy = 'assault'; this._orderFrontalAssault(); }
+    else if (rec.strategy === 'envelop') { this._battleStrategy = 'envelop'; this._orderFlanking(); }
+    else if (rec.strategy === 'defend')  { this._battleStrategy = 'defend';  this._orderHoldAndDefend(); }
+    else return false;
+    return true;
+  }
+
   _evaluateAndAdaptStrategy() {
     const now          = Date.now() / 1000;
     const recent       = this._sightings.filter(s => now - s.time < 15);
@@ -1701,11 +1721,12 @@ export class Captain {
       return;
     }
 
-    // Conditions changed — pick a new strategy from scratch
-    this._pickAndExecuteBattleStrategy();
+    // Conditions changed — check advisor before picking from scratch
+    if (!this._applyAdvisorIfConfident()) this._pickAndExecuteBattleStrategy();
   }
 
   _pickAndExecuteBattleStrategy() {
+    if (this._applyAdvisorIfConfident()) return;
     const now      = Date.now() / 1000;
     const recent   = this._sightings.filter(s => now - s.time < 10);
     const clusters = this._countContactClusters(recent, 500);

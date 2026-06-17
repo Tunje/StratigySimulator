@@ -527,6 +527,157 @@ The current map is flat procedural tiles. Adding terrain that blocks line of sig
 
 ---
 
+## Concept: Operational Orders
+
+The current advance is a single mode — the captain scouts sector by sector, pushes forward aggressively on contact, and picks assault, envelop, or defend based on local strength estimates. This is best described as an **aggressive advance to contact**. Four additional operational orders are designed below. An order sets the captain's overall doctrine for the entire engagement — it shapes how he advances, how he reacts to contact, and what battle strategies are available to him.
+
+Orders would be set externally (by a future Colonel/HQ tier, or by scenario setup) via a new `setOrder(type)` method on the captain before `setObjective` is called. The order does not override the phase machine — it adjusts thresholds, strategy weights, and withdrawal triggers within it.
+
+---
+
+### Order 1 — Aggressive Advance (current behaviour, baseline)
+
+The captain presses forward as fast as scouts can clear the ground ahead. On contact he commits quickly and accepts high casualties to destroy the enemy force.
+
+**Doctrine characteristics:**
+- Scout doctrine: `depth: deep`, `onContact: observe`
+- `contactAssessTime` bias: toward the shorter end of the personality range
+- Strategy weights: `assault` preferred when force ratio ≥ 1.0×; `envelop` otherwise; `defend` only if clearly outnumbered
+- Withdrawal trigger: falls back only when active troops drop below 60% of battle-start strength
+- After winning: immediately advances to next waypoint
+- Attachment use: tanks lead, APCs envelop aggressively, artillery fires on every confirmed sighting
+
+---
+
+### Order 2 — Cautious Advance (passive / bounding overwatch)
+
+The captain advances but never commits to a fight he hasn't chosen. Every sector is cleared properly before the main body moves. On contact he prefers to find good ground and let the enemy come to him.
+
+**Doctrine characteristics:**
+- Scout doctrine: `depth: screen` (scouts closer in, lower risk), `onContact: flee` (preserve scouts)
+- `contactAssessTime` bias: full duration — captain observes longer before deciding
+- Strategy weights: `defend` or `envelop` always preferred; `assault` only when force ratio ≥ 2.0×
+- Advance only resumes when scouts confirm two consecutive clear observations (not just one)
+- LTs advance in tighter mutual-support spacing — no lt left forward without a neighbour in range
+- Withdrawal trigger: falls back at 75% of battle-start strength (more conservative)
+- After winning: pauses for a full reorder before advancing — never exploits while disorganised
+- Attachment use: tanks trail behind the infantry line as overwatch; APCs hold at flank staging positions and only envelop on confirmed clear flanks
+
+---
+
+### Order 3 — Push Through (exploitation)
+
+The captain ignores small contacts and drives for the objective at speed. Used after a breakthrough when enemy resistance is expected to be fragmented and disorganised. Bypasses pockets rather than reducing them.
+
+**Doctrine characteristics:**
+- Scout doctrine: `depth: deep`, `onContact: flee` — scouts report and immediately pull back; company does not halt for them
+- `contactAssessTime`: near zero — captain does not pause on contact reports; he assesses on the move
+- Strategy weights: `assault` always; no `envelop` (takes too long); `defend` disabled entirely
+- Contact threshold: only enters `contact` phase if the sighting count indicates a serious enemy force (≥ 3 clustered sightings within 200 px of the march axis). Single sightings or flanking contacts are ignored and the advance continues
+- Withdrawal trigger: does not fall back — if stalled, pushes harder (re-issues assault orders rather than retreating)
+- After winning: no reorder pause — scouts confirm clear and the advance immediately continues
+- Attachment use: tanks lead 300 px ahead of the infantry line as a spearhead; APCs advance mounted at tank speed and only dismount directly on the objective; artillery does not fire unless spotter has eyes on a formed enemy position (no unobserved fire — risk of hitting own advancing troops)
+
+---
+
+### Order 4 — Defend This Position
+
+The captain does not advance. He plants the company at the objective coordinate and builds a prepared defence. This order replaces the waypoint advance loop entirely — the captain skips `scouting`/`advancing`/`moving_up` and goes directly to a reinforced `holding` phase at the objective.
+
+**Doctrine characteristics:**
+- No waypoints built — `_buildWaypoints` creates a single waypoint at the objective position and the captain moves there, then stops
+- On arriving at the objective: immediately enters a `preparing_defence` sub-state — deploys LTs in a 360° defensive ring rather than a linear formation; each LT is assigned a sector arc
+- Scouts deployed as a wide perimeter screen at ~400 px radius, circling the position continuously rather than probing forward
+- `_formDefensiveLine` fires immediately on arrival (not after 60 s of holding)
+- On contact: never advances or counter-attacks; captain only orders LTs to hold their assigned sectors; LTs may push back locally if enemy enters their perimeter but always return to assigned position
+- Counter-attack threshold: only if enemy drops below 30% of own strength and has broken into the perimeter — a limited local counter-push, not a general advance
+- Withdrawal: does not fall back unless ordered by higher command; will hold until combat ineffective
+- Attachment use: tanks deployed as fixed strong-points at the perimeter (sent to sector positions, hold fire until range); APCs positioned at the flanks as a mobile reserve — they can reposition within the perimeter but do not leave it; artillery fires defensively at all approaching contacts as soon as the spotter has eyes on them
+
+---
+
+## Concept: Heavy Weapons Teams
+
+Heavy weapons are crew-served weapons that are much more powerful than individual infantry weapons but require time to set up and can only engage within a limited firing arc. They sit between regular infantry and artillery in terms of weight, mobility, and firepower.
+
+### Core Mechanic — Deploy / Redeploy
+
+A heavy weapons team has three internal states:
+
+| State | Behaviour |
+|-------|-----------|
+| `travelling` | Moving to an ordered position. Cannot fire. Moves at reduced speed. |
+| `deploying` | Stationary, setting up. Cannot fire until setup complete. Takes 10–20 s depending on weapon type. |
+| `deployed` | Ready to fire within the weapon's arc. Cannot move without redeploying. |
+
+Transitioning from `deployed` back to `travelling` also requires a break-down time (same as deploy time). This means committing a heavy weapon to a position is a real tactical decision — repositioning takes 20–40 s during which the team is vulnerable and silent.
+
+### Firing Arc
+
+A deployed heavy weapon can only engage targets within a narrow arc centred on its emplacement direction. The arc is set when `deploying` begins and cannot change while `deployed`.
+
+| Weapon type | Arc half-angle | Notes |
+|-------------|---------------|-------|
+| MMG | ±25° | Can sweep within arc during firing |
+| Mortar | N/A | Indirect fire — no line-of-sight arc required; fires at map coordinates |
+| Recoilless Rifle | ±10° | Very narrow; primarily anti-armour |
+
+If an enemy appears outside the arc, the team cannot engage and must request a redeploy order from the sergeant commanding them to change direction. This creates realistic dead zones and requires the commanding sergeant to think about where to point the weapon.
+
+### Command Structure
+
+Each heavy weapons team is commanded by a sergeant (Officer subclass: `HeavyWeaponsSergeant`). The sergeant has 2–3 crew soldiers attached. The sergeant:
+
+- Receives a position + facing order from the lieutenant
+- Orders the team to travel to that position
+- Initiates deployment on arrival
+- Reports the weapon status (`travelling` / `deploying` / `deployed`) in its sergeant report so the LT knows when it is operational
+- Reports contacts within arc to the LT as normal
+
+The lieutenant treats a heavy weapons sergeant like any other sergeant for reporting purposes. The distinction is in the orders: the LT does not send a HW sergeant into a flanking push — it assigns it a support position and facing. It would need a new LT order type: `assignFireSupport(x, y, facingAngle)`.
+
+### Weapon Types Designed
+
+**MMG (Medium Machine Gun)**
+- Long range: 350 px (vs 220 px rifle)
+- High fire rate: 0.4–0.6 s between rounds
+- Hit chance vs infantry: 65% but always injures (never kills outright — pins rather than destroys)
+- Suppression effect: any enemy within 150 px of the impact point receives `markUnderFire()` even if not directly hit
+- Armour: useless vs armour class `heavy`; 15% pen vs `light`
+- Deploy time: 12 s
+- Arc: ±25°
+- Primary use: fix enemy infantry in place so friendly elements can manoeuvre
+
+**Mortar**
+- Indirect fire — does not need line of sight to target
+- Requires a forward observer (the platoon's Corporal or a scout can act as observer, radioing coordinates)
+- Fire mission: 3 rounds per designation, 6 s reload between rounds
+- Blast radius: 80 px (smaller than artillery's 130 px)
+- Scatter: 40 px (observed), 120 px (unobserved)
+- Cannot fire closer than 100 px to own troops (minimum range)
+- Deploy time: 15 s
+- Primary use: hitting targets behind cover, suppressing clustered infantry, smoke (future)
+
+**Recoilless Rifle**
+- Direct fire, very high AT penetration
+- Range: 300 px
+- vs heavy armour: 70% pen (highest of any infantry weapon)
+- vs light armour: 90% pen
+- vs infantry: 55% hit, always kills on hit (high-velocity round)
+- Fire rate: 8 s (single-shot, slow reload)
+- Deploy time: 10 s
+- Arc: ±10° — must be aimed almost directly at the target
+- Primary use: ambushing armour at range from a prepared position
+
+### Integration with Existing Systems
+
+- The `HeavyWeaponsSergeant` class extends `Officer`; it overrides the state machine to add `travelling`/`deploying`/`deployed` states before the normal `engaging`/`attacking` states
+- `lastReport` gains a `weaponStatus` field so the LT and captain can see whether the weapon is operational
+- The captain's `_updateAttachment` does not manage heavy weapons — they are organic to their platoon, not a separate attachment
+- Heavy weapons teams would be assigned to a lieutenant platoon at spawn, replacing one of the standard sergeant squads; the LT then has 2 standard squads + 1 HW team
+
+---
+
 ## Repository
 
 https://github.com/Tunje/StratigySimulator.git

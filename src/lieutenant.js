@@ -230,24 +230,31 @@ export class Lieutenant {
 
   _assess(allUnits, factionMgr) {
     // ── Gather intelligence ───────────────────────────────────────────────────
-    // Primary: sergeant reports
+    // Primary: sergeant reports — use the HIGHEST single report, not the sum.
+    // Multiple sergeants often see the same enemies; summing inflates the count
+    // and makes the LT believe there are far more enemies than actually present.
     let reportedOpposition = 0;
+    let sgtsReporting      = false;
     const enemyPositions   = [];
 
     for (const sgt of this.sergeants) {
       if (!sgt.active || !sgt.lastReport) continue;
-      reportedOpposition += sgt.lastReport.opposition;
+      if (sgt.lastReport.opposition > reportedOpposition) {
+        reportedOpposition = sgt.lastReport.opposition;
+      }
+      sgtsReporting = true;
       if (sgt.lastReport.enemyPosition) enemyPositions.push(sgt.lastReport.enemyPosition);
     }
 
-    // Secondary: own vision
+    // Secondary: own vision via _canSee — only used when no sergeant is reporting,
+    // so we don't double-count enemies the sergeants already saw.
     let ownSightCount = 0;
-    for (const u of allUnits) {
-      if (u === this || u.factionId === this.factionId || u.state === 'dead') continue;
-      if (!factionMgr.areEnemies(this.factionId, u.factionId)) continue;
-      if (!(u.active || u.state === 'active')) continue;
-      const dx = u.x - this.x, dy = u.y - this.y;
-      if (dx * dx + dy * dy < LT_VISION * LT_VISION) {
+    if (!sgtsReporting) {
+      for (const u of allUnits) {
+        if (u === this || u.factionId === this.factionId || u.state === 'dead') continue;
+        if (!factionMgr.areEnemies(this.factionId, u.factionId)) continue;
+        if (!(u.active || u.state === 'active')) continue;
+        if (!this._canSee(u)) continue;
         ownSightCount++;
         enemyPositions.push({ x: u.x, y: u.y });
       }
@@ -271,6 +278,15 @@ export class Lieutenant {
       if (this._hasContact && this._tactic !== 'consolidate' && this._tactic !== 'advance') {
         this._tactic           = 'consolidate';
         this._consolidateTimer = rand(8, 15);
+        const activeSgts = this.sergeants.filter(s => s.active);
+        const perp = this.facing + Math.PI / 2;
+        activeSgts.forEach((sgt, i) => {
+          const offset = (i - (activeSgts.length - 1) / 2) * SQUAD_SPREAD;
+          sgt.setMoveTarget(
+            this.x + Math.cos(perp) * offset,
+            this.y + Math.sin(perp) * offset,
+          );
+        });
       }
       return;
     }
@@ -434,18 +450,23 @@ export class Lieutenant {
 
   _issueOrders(activeSgts, tactic) {
     if (tactic === 'attack') {
-      // Each sergeant advances toward the enemy position they last reported.
-      // If a sergeant has no report yet, fall back to any other sergeant's known position.
       const anyKnownPos = activeSgts.map(s => s.lastReport?.enemyPosition).find(p => p != null);
-      if (!anyKnownPos) return;
 
       activeSgts.forEach(sgt => {
         const targetPos = sgt.lastReport?.enemyPosition ?? anyKnownPos;
-        const angle = Math.atan2(targetPos.y - sgt.y, targetPos.x - sgt.x);
-        sgt.setMoveTarget(
-          targetPos.x - Math.cos(angle) * 80,
-          targetPos.y - Math.sin(angle) * 80
-        );
+        if (targetPos) {
+          const angle = Math.atan2(targetPos.y - sgt.y, targetPos.x - sgt.x);
+          sgt.setMoveTarget(
+            targetPos.x - Math.cos(angle) * 80,
+            targetPos.y - Math.sin(angle) * 80
+          );
+        } else if (sgt._marchDir !== null) {
+          // Contact confirmed but no position known — push forward in march direction
+          sgt.setMoveTarget(
+            sgt.x + Math.cos(sgt._marchDir) * 150,
+            sgt.y + Math.sin(sgt._marchDir) * 150
+          );
+        }
       });
 
     } else if (tactic === 'fallback') {

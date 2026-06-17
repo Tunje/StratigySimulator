@@ -28,6 +28,7 @@ export class APC {
     this._underFireTimer = 0;
     this._dismounted     = false;
     this._clearTimer     = 0;
+    this._recalling      = false;
     this._sergeant       = null; // Officer attached as dismount squad
   }
 
@@ -64,14 +65,37 @@ export class APC {
     const visible = enemies.filter(e => this._canSee(e));
     this._lockedTarget = visible.length > 0 ? nearest(this, visible) : null;
 
-    // Dismount / remount
+    // Dismount when enemies close
     if (nearbyCount > 0 && !this._dismounted) {
       this._dismount();
-    } else if (nearbyCount === 0 && this._dismounted) {
-      this._clearTimer += dt;
-      if (this._clearTimer >= REMOUNT_CLEAR) this._remount();
-    } else {
+      this._recalling  = false;
       this._clearTimer = 0;
+    }
+
+    // While dismounted: track how long the area has been clear
+    if (this._dismounted) {
+      if (nearbyCount > 0) {
+        this._clearTimer = 0;
+        this._recalling  = false;
+      } else {
+        this._clearTimer += dt;
+        if (this._clearTimer >= REMOUNT_CLEAR && !this._recalling) {
+          this._recalling = true;
+          this._callTroopsBack();
+        }
+      }
+
+      // Check if all troops have returned and board them
+      if (this._recalling && this._sergeant) {
+        const boardRange = APC_RADIUS * 2.5;
+        const sgtClose   = Math.hypot(this._sergeant.x - this.x, this._sergeant.y - this.y) < boardRange;
+        const allClose   = this._sergeant.soldiers.every(s =>
+          s.state === 'dead' || Math.hypot(s.x - this.x, s.y - this.y) < boardRange
+        );
+        if (sgtClose && allClose) {
+          this._remount();
+        }
+      }
     }
 
     // While mounted, snap sergeant + soldiers to APC position (they're hidden inside)
@@ -157,11 +181,26 @@ export class APC {
     );
   }
 
+  _callTroopsBack() {
+    if (!this._sergeant) return;
+    this._sergeant.recallTo(this.x, this.y);
+  }
+
   _remount() {
     this._dismounted = false;
+    this._recalling  = false;
+    this._clearTimer = 0;
     if (!this._sergeant) return;
-    this._sergeant._mounted = true;
-    for (const s of this._sergeant.soldiers) s._mounted = true;
+    this._sergeant._mounted    = true;
+    this._sergeant._sgtPhase   = 'moving';
+    this._sergeant.x           = this.x;
+    this._sergeant.y           = this.y;
+    for (const s of this._sergeant.soldiers) {
+      s._mounted  = true;
+      s.x         = this.x;
+      s.y         = this.y;
+      s.moveTarget = null;
+    }
   }
 
   _canSee(other) {
@@ -214,7 +253,7 @@ export class APC {
     ctx.save();
     ctx.translate(sx, sy);
     ctx.rotate(this.facing);
-    ctx.globalAlpha  = this._dismounted ? 0.6 : 1;
+    ctx.globalAlpha  = 1;
     ctx.fillStyle    = this.color;
     ctx.strokeStyle  = '#000';
     ctx.lineWidth    = Math.max(1.5, zoom * 1.5);

@@ -1,4 +1,5 @@
 import { addBullet, addImpact, addDeath } from './effects.js';
+import { SQUAD_SIZE } from './config.js';
 
 const RADIUS           = 8;
 const MOVE_SPEED       = 35;
@@ -22,9 +23,11 @@ const MAP_CENTER_X      = 4096; // 256 tiles * 32px / 2
 const WAYPOINT_STEP     = 700;  // px per sector
 const SCOUT_PATROL_TIME    = 10.0; // s to patrol sector before declaring clear
 const ADVANCE_WAIT         = 18.0; // max s waiting for lts to reach waypoint
-const CONSOLIDATE_TIME     = 20.0; // s to regroup after battle
+const CONSOLIDATE_TIME     = 20.0;  // s to regroup after battle
+const REORDER_TIME         = 120.0; // 2-min post-battle reorder before next advance
 const NO_CONTACT_LIMIT     = 120.0; // s of silence before captain consolidates all forces
 const STRATEGY_COMMIT_TIME = 25.0; // min s before re-evaluating a chosen battle strategy
+const SQUAD_FULL_SIZE   = SQUAD_SIZE; // from config.js
 const FLANK_SPREAD      = 420;  // perpendicular px offset for flanking lts
 const LT_WPT_SPREAD     = 200;  // vertical spread between lts at a waypoint
 
@@ -253,35 +256,34 @@ export class Scout {
     const visible = enemies.filter(e => this._canSee(e));
 
     if (visible.length > 0) {
-      const cx        = visible.reduce((s, e) => s + e.x, 0) / visible.length;
-      const cy        = visible.reduce((s, e) => s + e.y, 0) / visible.length;
-      const enemyDist = Math.sqrt((cx - this.x) ** 2 + (cy - this.y) ** 2);
-      const doctrine  = this._captain?._scoutDoctrine?.onContact || 'flee';
+      const cx = visible.reduce((s, e) => s + e.x, 0) / visible.length;
+      const cy = visible.reduce((s, e) => s + e.y, 0) / visible.length;
 
       if (this._captain && this._reportCooldown <= 0) {
         visible.forEach(e => this._captain.receiveSightingReport({ x: e.x, y: e.y }));
-        this._reportCooldown = doctrine === 'observe' ? 0.8 : 2.0;
+        this._reportCooldown = 0.8;
       }
 
-      if (doctrine === 'observe' && enemyDist > SCOUT_DANGER_DIST && !this._underFire) {
-        // Hold position and keep watching
-        this._isObserving = true;
-        this._isFleeing   = false;
-        this.moveTarget   = null;
-      } else {
+      if (this._underFire) {
+        // Taking fire — break contact and run
         this._isObserving = false;
         const away = Math.atan2(this.y - cy, this.x - cx);
-        this._fleeTarget  = {
+        this._fleeTarget = {
           x: this.x + Math.cos(away) * SCOUT_FLEE_DIST,
           y: this.y + Math.sin(away) * SCOUT_FLEE_DIST,
         };
         this._isFleeing = true;
+      } else {
+        // Visible enemies but not under fire — hold and observe
+        this._isObserving = true;
+        this._isFleeing   = false;
+        this.moveTarget   = null;
       }
     } else {
       this._isObserving = false;
-      // Even with no visible enemies, flee if taking fire from an unseen shooter
+      // Under fire from an unseen shooter — run back the way we came
       if (this._underFire && !this._isFleeing) {
-        const away = this.facing + Math.PI; // run back the way we came
+        const away = this.facing + Math.PI;
         this._fleeTarget = {
           x: this.x + Math.cos(away) * SCOUT_FLEE_DIST,
           y: this.y + Math.sin(away) * SCOUT_FLEE_DIST,
@@ -532,7 +534,7 @@ export class Captain {
     this._noContactTimer = 0;
     if (!this._hasContact) this._hasContact = true;
     // Re-engage from any non-committed phase — a scout report means enemies are real and present
-    const nonCommitted = ['scouting', 'advancing', 'moving_up', 'rallying', 'holding', 'consolidating'];
+    const nonCommitted = ['scouting', 'advancing', 'moving_up', 'rallying', 'reordering', 'holding', 'consolidating'];
     if (nonCommitted.includes(this._phase)) {
       this._enterContact();
     }
@@ -556,7 +558,7 @@ export class Captain {
     this._noContactTimer = 0;
     if (!this._hasContact) this._hasContact = true;
     // Re-engage from any non-committed phase — an LT report means live contact
-    const nonCommitted = ['scouting', 'advancing', 'moving_up', 'rallying', 'holding', 'consolidating'];
+    const nonCommitted = ['scouting', 'advancing', 'moving_up', 'rallying', 'reordering', 'holding', 'consolidating'];
     if (nonCommitted.includes(this._phase)) {
       this._enterContact();
     }
@@ -674,6 +676,7 @@ export class Captain {
         break;
 
       case 'mopping_up': {
+        this._mopUpTimer = (this._mopUpTimer || 0) + dt;
         // If lts find serious contact again, re-engage properly
         if (this.lieutenants.some(l => l.active && l._knownActiveEnemies > 2)) {
           this._enterContact();
@@ -682,7 +685,8 @@ export class Captain {
         this._dispatchMopUpOrders();
         const now2 = Date.now() / 1000;
         const stillVisible = this._sightings.filter(s => now2 - s.time < 10);
-        if (stillVisible.length === 0 && this._ltsHaveNoContact()) {
+        // Rally when area is clear, or after 45s of mopping up so stragglers don't trap us here
+        if (stillVisible.length === 0 && this._ltsHaveNoContact() || this._mopUpTimer >= 45) {
           this._startRally();
         }
         break;
@@ -692,6 +696,21 @@ export class Captain {
         this._consolidateTimer += dt;
         this._tickScoutCircle(dt);
         if (this._consolidateTimer >= CONSOLIDATE_TIME || this._allLtsNear(this._rallyPoint)) {
+          this._startReordering();
+        }
+        break;
+
+      case 'reordering':
+        this._reorderTimer += dt;
+        this._tickScoutCircle(dt);
+        // Periodically re-issue orders to units that are still making their way in
+        if (Math.floor(this._reorderTimer / 20) > (this._lastReorderPulse || 0)) {
+          this._lastReorderPulse = Math.floor(this._reorderTimer / 20);
+          this._reorderPulse();
+        }
+        if (this._reorderTimer >= REORDER_TIME) {
+          this._reformFormation();
+          this._checkPromotions();
           if (this._battleWon) {
             this._waypointIdx++;
             this._startScouting();
@@ -895,17 +914,12 @@ export class Captain {
           epos.x + Math.cos(enemyPerp) * flankOff + Math.cos(toEnemy) * LT_WPT_SPREAD * 0.5,
           epos.y + Math.sin(enemyPerp) * flankOff + Math.sin(toEnemy) * LT_WPT_SPREAD * 0.5,
         );
-      } else if (epos) {
-        // Contact detected — stage on the flank and hold until infantry engages
-        platoon.setMoveTarget(
-          this.x + Math.cos(perp) * flankOff,
-          this.y + Math.sin(perp) * flankOff,
-        );
       } else {
-        // Advancing — keep pace with the captain on the flank, not racing to the waypoint
+        // Advancing or contact assessment — keep pace with the infantry line, not the captain
+        const wpt = this._currentWpt || { x: this.x, y: this.y };
         platoon.setMoveTarget(
-          this.x + Math.cos(perp) * flankOff,
-          this.y + Math.sin(perp) * flankOff,
+          wpt.x + Math.cos(perp) * flankOff,
+          wpt.y + Math.sin(perp) * flankOff,
         );
       }
 
@@ -1284,8 +1298,9 @@ export class Captain {
   }
 
   _enterMoppingUp() {
-    this._phase  = 'mopping_up';
-    this._tactic = 'mop up';
+    this._phase      = 'mopping_up';
+    this._tactic     = 'mop up';
+    this._mopUpTimer = 0;
   }
 
   _dispatchMopUpOrders() {
@@ -1380,7 +1395,7 @@ export class Captain {
       const ltX = this.x + Math.cos(rear) * LT_WPT_SPREAD * 0.4 + Math.cos(perp) * ltLateral;
       const ltY = this.y + Math.sin(rear) * LT_WPT_SPREAD * 0.4 + Math.sin(perp) * ltLateral;
 
-      lt.sergeants.forEach((sgt, si) => {
+      (lt.sergeants || []).forEach((sgt, si) => {
         if (!sgt.active) return;
         const sgtLateral = (si - (lt.sergeants.length - 1) / 2) * LT_WPT_SPREAD * 0.32;
         const sgtX = ltX + Math.cos(rear) * LT_WPT_SPREAD * 0.7 + Math.cos(perp) * sgtLateral;
@@ -1413,20 +1428,21 @@ export class Captain {
   }
 
   _scoutNeedsOrders(scout) {
-    // If advancing with no enemies — scout is on station, captain orders them to hold
-    if (['scouting', 'advancing', 'moving_up'].includes(this._phase) && !this._hasContact) {
-      scout._idleTimer = -20;
+    // During reordering — keep scouts fanned ahead on the march axis
+    if (this._phase === 'reordering') {
+      const activeScouts = this.scouts.filter(s => s.active);
+      const idx       = activeScouts.indexOf(scout);
+      const depth     = idx + 1;
+      const targetIdx = Math.min(this._waypointIdx + depth, this._waypoints.length - 1);
+      const wpt       = this._waypoints[targetIdx];
+      if (wpt) scout.setMoveTarget(wpt.x, wpt.y);
       return;
     }
 
-    // If contact position is known but sightings are going stale, confirm it first
-    if (this._lastContactPos) {
-      const now    = Date.now() / 1000;
-      const fresh  = this._sightings.filter(s => now - s.time < 10).length;
-      if (fresh === 0) {
-        scout.setMoveTarget(this._lastContactPos.x, this._lastContactPos.y);
-        return;
-      }
+    // If scouting/advancing with no contact — scout is on station, throttle their idle requests
+    if (['scouting', 'advancing', 'moving_up'].includes(this._phase) && !this._hasContact) {
+      scout._idleTimer = -20;
+      return;
     }
 
     if (this._circleCenter) {
@@ -1482,6 +1498,46 @@ export class Captain {
       this._promotedScouts.push(newScout);
       return;
     }
+  }
+
+  // After a battle, promote up to 3 scouts and send each one to a different
+  // forward sector so the captain has eyes ahead before the next advance.
+  _promoteAndDeployForwardScouts() {
+    const MAX_SCOUTS = 3;
+
+    // Stop any circle-patrol so deployed scouts aren't pulled back
+    this._circleCenter = null;
+
+    // Top up scouts from command-squad soldiers until we have MAX_SCOUTS
+    while (this.scouts.filter(s => s.active).length < MAX_SCOUTS) {
+      let promoted = false;
+      for (const sgt of this._commandSquads) {
+        if (!sgt.active) continue;
+        const soldierIdx = (sgt.soldiers || []).findIndex(s => s.active);
+        if (soldierIdx === -1) continue;
+        const [soldier] = sgt.soldiers.splice(soldierIdx, 1);
+        soldier.state = 'dead';
+        const newScout = new Scout(soldier.x, soldier.y, this.factionId, soldier.facing, this.color);
+        newScout._captain = this;
+        this.scouts.push(newScout);
+        this._promotedScouts.push(newScout);
+        promoted = true;
+        break;
+      }
+      if (!promoted) break;
+    }
+
+    // Send each scout to a progressively deeper forward sector (+1, +2, +3 waypoints)
+    const activeScouts = this.scouts.filter(s => s.active);
+    activeScouts.forEach((scout, i) => {
+      const depth     = i + 1;
+      const targetIdx = Math.min(this._waypointIdx + depth, this._waypoints.length - 1);
+      const wpt       = this._waypoints[targetIdx];
+      if (!wpt) return;
+      scout._patrolDist    = 250;
+      scout._patrolBearing = this._marchDir;
+      scout.setMoveTarget(wpt.x, wpt.y);
+    });
   }
 
   _checkPromotions() {
@@ -1714,16 +1770,27 @@ export class Captain {
     const now     = Date.now() / 1000;
     const threats = this._sightings.filter(s => now - s.time < 30);
     const via     = this._safeRouteWaypoint(this.x, this.y, dest, threats);
+    const perp    = this._marchDir + Math.PI / 2;
+    let   slot    = 0;
+
     for (const lt of this.lieutenants) {
       if (lt.sergeants) {
         for (const sgt of lt.sergeants) {
+          if (sgt.active) continue; // alive sergeant handles its own soldiers via recallTo
           for (const sol of (sgt.soldiers || [])) {
-            if (sol.active) sol.setMoveTarget(via.x, via.y);
+            if (!sol.active) continue;
+            const off = (slot - 1) * 40;
+            sol.setMoveTarget(via.x + Math.cos(perp) * off, via.y + Math.sin(perp) * off);
+            slot++;
           }
         }
-      } else if (lt.soldiers) {
+      } else if (!lt.active && lt.soldiers) {
+        // Promoted sergeant acting as LT is dead — order its soldiers directly
         for (const sol of lt.soldiers) {
-          if (sol.active) sol.setMoveTarget(via.x, via.y);
+          if (!sol.active) continue;
+          const off = (slot - 1) * 40;
+          sol.setMoveTarget(via.x + Math.cos(perp) * off, via.y + Math.sin(perp) * off);
+          slot++;
         }
       }
     }
@@ -1753,6 +1820,142 @@ export class Captain {
       x: midX + Math.cos(perp) * 900 * side,
       y: midY + Math.sin(perp) * 900 * side,
     };
+  }
+
+  _startReordering() {
+    this._phase            = 'reordering';
+    this._reorderTimer     = 0;
+    this._lastReorderPulse = 0;
+    this._tactic           = 'reordering';
+
+    const rallyBase = this._rallyPoint || this._currentWpt || { x: this.x, y: this.y };
+
+    // Clear stale contact on all LTs so the movement guard doesn't pin them
+    for (const lt of this.lieutenants) {
+      lt._knownActiveEnemies = 0;
+      lt._hasContact         = false;
+    }
+
+    // Order all active LTs to their positions at the rally base via recallTo —
+    // this bypasses the movement guard and cascades down to their sergeants
+    const activeLts = this.lieutenants.filter(l => l.active);
+    const perp = this._marchDir + Math.PI / 2;
+    activeLts.forEach((lt, i) => {
+      const offset = (i - (activeLts.length - 1) / 2) * LT_WPT_SPREAD;
+      lt.recallTo(
+        rallyBase.x + Math.cos(perp) * offset,
+        rallyBase.y + Math.sin(perp) * offset,
+      );
+    });
+
+    // Order every orphaned soldier (under dead LTs or dead sergeants) to gather
+    this._orderOrphanedSoldiersTo(rallyBase);
+
+    // Order any active sergeants still under dead LTs that weren't promoted yet
+    for (const lt of this.lieutenants) {
+      if (lt.active) continue;
+      for (const sgt of (lt.sergeants || [])) {
+        if (!sgt.active) continue;
+        sgt.recallTo(rallyBase.x, rallyBase.y);
+      }
+    }
+
+    this._promoteAndDeployForwardScouts();
+  }
+
+  // Periodic re-pulse during reordering — catches units still en route
+  _reorderPulse() {
+    const rallyBase = this._rallyPoint || this._currentWpt || { x: this.x, y: this.y };
+    this._orderOrphanedSoldiersTo(rallyBase);
+    for (const lt of this.lieutenants) {
+      if (lt.active) continue;
+      for (const sgt of (lt.sergeants || [])) {
+        if (!sgt.active) continue;
+        sgt.recallTo(rallyBase.x, rallyBase.y);
+      }
+    }
+  }
+
+  // Final formation tidy at the end of reordering — consolidates under-strength
+  // squads, then places everyone into a proper march line before the next advance
+  _reformFormation() {
+    this._consolidateTroops();
+
+    // Push the form-up line 200px forward of the rally base so troops visibly
+    // advance into position rather than shuffling where they already stand.
+    const rallyBase = this._rallyPoint || this._currentWpt || { x: this.x, y: this.y };
+    const formX     = rallyBase.x + Math.cos(this._marchDir) * 200;
+    const formY     = rallyBase.y + Math.sin(this._marchDir) * 200;
+    const perp      = this._marchDir + Math.PI / 2;
+    const activeLts = this.lieutenants.filter(l => l.active);
+    const ordered   = this._getStableFormationOrder(activeLts);
+
+    ordered.forEach((lt, li) => {
+      const ltOff = (li - (ordered.length - 1) / 2) * LT_WPT_SPREAD;
+      lt.recallTo(
+        formX + Math.cos(perp) * ltOff,
+        formY + Math.sin(perp) * ltOff,
+      );
+      // lt.recallTo cascades to the LT's sergeants automatically
+    });
+  }
+
+  _consolidateTroops() {
+    for (const lt of this.lieutenants) {
+      const sgts = (lt.sergeants || []);
+      if (!sgts.length) continue;
+
+      // Step 1: Pool all active soldiers from dead sergeants
+      const pool = [];
+      for (const sgt of sgts) {
+        if (sgt.active) continue;
+        for (const sol of (sgt.soldiers || [])) {
+          if (!sol.active) continue;
+          sol.commandingOfficer = null;
+          pool.push(sol);
+        }
+        sgt.soldiers = (sgt.soldiers || []).filter(s => !s.active);
+      }
+
+      const activeSgts = sgts.filter(s => s.active);
+      if (!activeSgts.length) continue;
+
+      // Step 2: Distribute dead-sergeant soldiers into active squads (smallest first)
+      const bySize = () => [...activeSgts].sort((a, b) =>
+        a.soldiers.filter(s => s.active).length - b.soldiers.filter(s => s.active).length
+      );
+      for (let i = 0; i < pool.length; i++) {
+        const sgt = bySize()[i % activeSgts.length];
+        sgt.soldiers.push(pool[i]);
+        pool[i].commandingOfficer = sgt;
+      }
+
+      // Step 3: Merge under-strength squads into larger ones
+      const mergeThreshold = SQUAD_FULL_SIZE - 1;
+      const tinySquads = activeSgts.filter(s =>
+        s.soldiers.filter(sol => sol.active).length <= mergeThreshold
+      );
+      const fullSquads = activeSgts.filter(s =>
+        s.soldiers.filter(sol => sol.active).length > mergeThreshold
+      );
+
+      if (tinySquads.length > 0 && fullSquads.length > 0) {
+        for (const tiny of tinySquads) {
+          // Find the largest receiving squad
+          const receiver = fullSquads.reduce((best, s) =>
+            s.soldiers.filter(sol => sol.active).length >
+            best.soldiers.filter(sol => sol.active).length ? s : best
+          );
+          const toMove = tiny.soldiers.filter(s => s.active);
+          for (const sol of toMove) {
+            tiny.soldiers.splice(tiny.soldiers.indexOf(sol), 1);
+            receiver.soldiers.push(sol);
+            sol.commandingOfficer = receiver;
+          }
+          // Tiny sergeant now has no squad — they fight alone until next reform
+        }
+      }
+    }
   }
 
   _startRally() {

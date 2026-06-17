@@ -20,6 +20,7 @@ const FIRE_RATE_MIN      = 1.5;
 const FIRE_RATE_MAX      = 2.5;
 const UNDER_FIRE_DURATION = 4.0;
 const ARRIVE_THRESHOLD   = 10; // world px — close enough to destination
+const ALERT_RANGE        = 250; // px — how far a contact shout carries
 
 export class Soldier {
   constructor(x, y, factionId, facing = 0, color = '#888') {
@@ -44,6 +45,10 @@ export class Soldier {
     this.moveTarget      = null; // { x, y } — set by officer orders
     this._isATRifleman   = false; // designated anti-tank rifleman for the platoon
     this._mounted        = false; // true when inside an APC — suppresses all activity
+    this.commandingOfficer = null; // sergeant this soldier reports to
+
+    this._alertDir   = 0;   // world-space angle of shouted contact direction
+    this._alertTimer = 0;   // seconds remaining in alert state
   }
 
   setMoveTarget(x, y) {
@@ -62,6 +67,14 @@ export class Soldier {
 
   markUnderFire() {
     if (this.active) this._underFireTimer = UNDER_FIRE_DURATION;
+  }
+
+  // Called by a nearby friendly who just spotted an enemy — direction is a world-space angle
+  receiveContactAlert(direction) {
+    if (!this.active || this._lockedTarget) return; // already engaging, no need
+    this.moveTarget  = null;  // freeze — scan before walking into it
+    this._alertDir   = direction;
+    this._alertTimer = 4.0;
   }
 
   update(dt, allUnits, factionMgr) {
@@ -87,15 +100,33 @@ export class Soldier {
       ? visibleActive
       : (visibleActive.length === 0 ? visibleInjured : []);
 
+    const prevLocked   = this._lockedTarget;
     this._lockedTarget = visibleTargets.length > 0 ? nearest(this, visibleTargets) : null;
+    if (!prevLocked && this._lockedTarget) {
+      this.moveTarget  = null; // stop on first contact; new orders from sergeant will override
+      this._alertTimer = 0;   // clear own alert state — we have a real target now
+      this._shoutContact(allUnits, factionMgr);
+    }
+    if (!!prevLocked !== !!this._lockedTarget && this.commandingOfficer) {
+      this.commandingOfficer.receiveSoldierContact(this, this._lockedTarget !== null);
+    }
 
     // Head movement
     if (this._lockedTarget) {
+      // Track the confirmed target
       const desired = normalizeAngle(
         Math.atan2(this._lockedTarget.y - this.y, this._lockedTarget.x - this.x) - this.facing
       );
       const diff = normalizeAngle(desired - this._headOffset);
       const step = HEAD_LOCK_SPEED * dt;
+      this._headOffset = Math.abs(diff) <= step ? desired : this._headOffset + Math.sign(diff) * step;
+      this._headTimer  = rand(HEAD_TURN_HOLD_MIN, HEAD_TURN_HOLD_MAX);
+    } else if (this._alertTimer > 0) {
+      // Alerted by a nearby buddy — snap head toward the reported threat direction
+      this._alertTimer -= dt;
+      const desired = normalizeAngle(this._alertDir - this.facing);
+      const diff    = normalizeAngle(desired - this._headOffset);
+      const step    = HEAD_LOCK_SPEED * dt;
       this._headOffset = Math.abs(diff) <= step ? desired : this._headOffset + Math.sign(diff) * step;
       this._headTimer  = rand(HEAD_TURN_HOLD_MIN, HEAD_TURN_HOLD_MAX);
     } else {
@@ -116,8 +147,8 @@ export class Soldier {
       this._shootCooldown = rand(FIRE_RATE_MIN, FIRE_RATE_MAX);
     }
 
-    // Movement — only when not actively engaging an enemy
-    if (this.moveTarget && !this._lockedTarget) {
+    // Movement — executes whenever ordered; first contact clears pending move above
+    if (this.moveTarget) {
       const dx   = this.moveTarget.x - this.x;
       const dy   = this.moveTarget.y - this.y;
       const dist = Math.sqrt(dx * dx + dy * dy);
@@ -131,6 +162,21 @@ export class Soldier {
         this.y = this.moveTarget.y;
         this.moveTarget = null;
       }
+    }
+  }
+
+  _shoutContact(allUnits, factionMgr) {
+    const dir = Math.atan2(
+      this._lockedTarget.y - this.y,
+      this._lockedTarget.x - this.x,
+    );
+    const r2 = ALERT_RANGE * ALERT_RANGE;
+    for (const u of allUnits) {
+      if (u === this || !u.active || factionMgr.areEnemies(this.factionId, u.factionId)) continue;
+      if (typeof u.receiveContactAlert !== 'function') continue;
+      const dx = u.x - this.x, dy = u.y - this.y;
+      if (dx * dx + dy * dy > r2) continue;
+      u.receiveContactAlert(dir);
     }
   }
 

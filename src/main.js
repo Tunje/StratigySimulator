@@ -10,6 +10,7 @@ import { Tank } from './tank.js';
 import { APC, MechanizedPlatoon } from './apc.js';
 import { ArtilleryCannon, Spotter } from './artillery.js';
 import { updateEffects, drawEffects } from './effects.js';
+import { SQUAD_SIZE, PLATOON_SIZE, COMPANY_SIZE } from './config.js';
 
 // ── Elements ──────────────────────────────────────────────────────────────────
 const canvas     = document.getElementById('game-canvas');
@@ -35,10 +36,9 @@ const CY = (MAP_H * 32) / 2;
 const cColor = factions.get('crimson').color;
 const aColor = factions.get('azure').color;
 
-// Change any of these to 3-10
-const LT_COUNT   = 5;   // lieutenants per captain
-const SGT_COUNT  = 3;   // squads (sergeants) per lieutenant
-const SOL_COUNT  = 3;   // troops per squad
+const LT_COUNT  = 5;          // lieutenants per captain
+const SGT_COUNT = PLATOON_SIZE; // sergeants per lieutenant
+const SOL_COUNT = SQUAD_SIZE;   // soldiers per sergeant
 
 const LT_SPACING  = 220;
 const SGT_SPACING = 70;

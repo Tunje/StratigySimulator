@@ -5,8 +5,10 @@ const APC_SPEED       = 65;
 const MG_RANGE        = 200;
 const MG_DETECT       = 75;
 const MG_VISION_ANG   = Math.PI;
-const MG_FIRE_RATE    = 1.2;
-const MG_HIT_CHANCE   = 0.60;
+const MG_HIT_CHANCE   = 0.28;  // inaccurate spray weapon
+const BURST_SIZE      = 10;    // rounds per burst
+const BURST_RATE      = 0.10;  // s between rounds in burst
+const BURST_RELOAD    = 3.5;   // s reload after full burst
 const ARRIVE_THRESH   = 14;
 const UNDER_FIRE_DUR  = 4.0;
 const DISMOUNT_RANGE  = 260; // dismount when enemies this close
@@ -24,7 +26,9 @@ export class APC {
 
     this._moveTarget     = null;
     this._lockedTarget   = null;
-    this._shootCooldown  = rand(0.5, MG_FIRE_RATE);
+    this._shootCooldown  = rand(0.5, BURST_RATE);
+    this._burstCount     = 0;
+    this._reloadTimer    = 0;
     this._underFireTimer = 0;
     this._dismounted     = false;
     this._clearTimer     = 0;
@@ -51,6 +55,7 @@ export class APC {
 
     if (this._underFireTimer > 0) this._underFireTimer -= dt;
     if (this._shootCooldown  > 0) this._shootCooldown  -= dt;
+    if (this._reloadTimer    > 0) this._reloadTimer    -= dt;
 
     const enemies = allUnits.filter(u =>
       u !== this && u.state !== 'dead' && u.active &&
@@ -110,21 +115,27 @@ export class APC {
       }
     }
 
-    // MG fire
-    if (this._lockedTarget && this._shootCooldown <= 0) {
+    // Burst-fire MG — 10 rounds rapid then reload
+    if (this._lockedTarget && this._reloadTimer <= 0 && this._shootCooldown <= 0) {
       this._shoot(this._lockedTarget);
-      this._shootCooldown = MG_FIRE_RATE * rand(0.8, 1.3);
+      this._burstCount++;
+      if (this._burstCount >= BURST_SIZE) {
+        this._burstCount  = 0;
+        this._reloadTimer = BURST_RELOAD;
+        this._shootCooldown = BURST_RELOAD;
+      } else {
+        this._shootCooldown = BURST_RATE * rand(0.8, 1.3);
+      }
     }
 
-    // Movement — slow to a stop when dismounted and fighting
-    if (this._moveTarget) {
+    // Movement — stop while dismounted so troops have a fixed point to reboard
+    if (this._moveTarget && !this._dismounted) {
       const dx   = this._moveTarget.x - this.x;
       const dy   = this._moveTarget.y - this.y;
       const dist = Math.sqrt(dx * dx + dy * dy);
       if (dist > ARRIVE_THRESH) {
-        const speed = this._dismounted ? 12 : APC_SPEED;
-        this.x      += (dx / dist) * speed * dt;
-        this.y      += (dy / dist) * speed * dt;
+        this.x      += (dx / dist) * APC_SPEED * dt;
+        this.y      += (dy / dist) * APC_SPEED * dt;
         this.facing  = Math.atan2(dy, dx);
       } else {
         this.x = this._moveTarget.x;

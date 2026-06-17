@@ -71,10 +71,15 @@ export class Soldier {
 
   // Called by a nearby friendly who just spotted an enemy — direction is a world-space angle
   receiveContactAlert(direction) {
-    if (!this.active || this._lockedTarget) return; // already engaging, no need
-    this.moveTarget  = null;  // freeze — scan before walking into it
+    if (!this.active || this._lockedTarget) return;
     this._alertDir   = direction;
     this._alertTimer = 4.0;
+    if (!this.moveTarget) {
+      this.moveTarget = {
+        x: this.x + Math.cos(direction) * 180,
+        y: this.y + Math.sin(direction) * 180,
+      };
+    }
   }
 
   update(dt, allUnits, factionMgr) {

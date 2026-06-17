@@ -82,6 +82,12 @@ export class Officer {
     return this;
   }
 
+  attachCorporal(corporal) {
+    this.corporal = corporal;
+    corporal.commandingOfficer = this;
+    return this;
+  }
+
   receiveSoldierContact(soldier, hasContact) {
     if (hasContact) {
       this._contactingSet.add(soldier);

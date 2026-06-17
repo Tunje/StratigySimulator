@@ -1,4 +1,4 @@
-import { addBullet, addImpact, addDeath } from './effects.js';
+import { addBullet, addImpact, addDeath, addExplosion } from './effects.js';
 
 const TANK_RADIUS     = 30;
 const TANK_SPEED      = 22;
@@ -10,6 +10,7 @@ const HIT_CHANCE      = 0.78;
 const ARRIVE_THRESH   = 18;
 const UNDER_FIRE_DUR  = 4.0;
 const TURRET_SPEED    = 1.8; // rad/s — turret rotates slowly
+const TANK_BLAST_R    = 65;  // HE splash radius (smaller than artillery's 130)
 
 export class Tank {
   constructor(x, y, factionId, facing = 0, color = '#888') {
@@ -66,7 +67,7 @@ export class Tank {
     }
 
     if (this._lockedTarget && this._shootCooldown <= 0) {
-      this._shoot(this._lockedTarget);
+      this._shoot(this._lockedTarget, allUnits);
       this._shootCooldown = FIRE_RATE + rand(0, 1.5);
     }
 
@@ -120,8 +121,8 @@ export class Tank {
     return false;
   }
 
-  _shoot(target) {
-    // Tank cannon vs armor: high pen chance
+  _shoot(target, allUnits) {
+    // AP round vs armor — no splash, direct kill only
     if (target.armorClass && target.armorClass !== 'none') {
       const penChance = target.armorClass === 'heavy' ? 0.65 : 0.90;
       const hit       = Math.random() < penChance;
@@ -134,26 +135,89 @@ export class Tank {
       }
       return;
     }
-    // vs infantry: cannon always kills, high accuracy
+    // HE round vs infantry — direct hit + splash in TANK_BLAST_R
     const hit = Math.random() < HIT_CHANCE;
     target.markUnderFire();
     addBullet(this.x, this.y, target.x, target.y, hit);
     if (hit) {
       addImpact(target.x, target.y);
-      target.state = 'dead'; // cannon shell — no injury
+      addExplosion(target.x, target.y, TANK_BLAST_R);
+      target.state = 'dead';
       addDeath(target.x, target.y, target.color);
+      // Splash damage — falloff from centre
+      const r2 = TANK_BLAST_R * TANK_BLAST_R;
+      for (const u of allUnits) {
+        if (u === target || !u.active) continue;
+        const dx = u.x - target.x, dy = u.y - target.y;
+        if (dx * dx + dy * dy > r2) continue;
+        const d      = Math.sqrt(dx * dx + dy * dy);
+        const chance = (1 - d / TANK_BLAST_R) * 0.60;
+        if (Math.random() < chance) {
+          u.state = Math.random() < 0.55 ? 'dead' : 'injured';
+          if (u.state === 'dead') addDeath(u.x, u.y, u.color);
+          u.markUnderFire?.();
+        }
+      }
     }
   }
 
   draw(ctx, camera, showCones = true) {
-    if (this.dead) return;
-
     const zoom = camera.zoom;
     const sx   = (this.x - camera.x) * zoom;
     const sy   = (this.y - camera.y) * zoom;
     const r    = TANK_RADIUS * zoom;
 
     if (sx < -200 || sy < -200 || sx > ctx.canvas.width + 200 || sy > ctx.canvas.height + 200) return;
+
+    // Dead tank — draw as a burnt-out wreck
+    if (this.dead) {
+      ctx.save();
+      ctx.translate(sx, sy);
+      ctx.rotate(this.facing);
+      // Charred hull
+      ctx.fillStyle   = '#2a2a2a';
+      ctx.strokeStyle = '#111';
+      ctx.lineWidth   = Math.max(1.5, zoom * 1.5);
+      ctx.fillRect(-r * 1.3, -r * 0.75, r * 2.6, r * 1.5);
+      ctx.strokeRect(-r * 1.3, -r * 0.75, r * 2.6, r * 1.5);
+      // Burn marks
+      ctx.strokeStyle = 'rgba(80,40,0,0.55)';
+      ctx.lineWidth   = Math.max(1, zoom * 0.7);
+      [-r * 0.58, r * 0.58].forEach(yOff => {
+        ctx.beginPath();
+        ctx.moveTo(-r * 1.3, yOff); ctx.lineTo(r * 1.3, yOff);
+        ctx.stroke();
+      });
+      ctx.restore();
+      // Wrecked turret — fixed at a tilted angle, gun pointing downward
+      ctx.save();
+      ctx.translate(sx, sy);
+      ctx.rotate(this.facing + this._turretOffset + 0.7);
+      ctx.fillStyle   = '#222';
+      ctx.strokeStyle = '#111';
+      ctx.lineWidth   = Math.max(1.5, zoom * 1.5);
+      ctx.beginPath();
+      ctx.arc(0, 0, r * 0.6, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = '#1a1a1a';
+      ctx.fillRect(r * 0.55, -r * 0.13, r * 1.5, r * 0.26);
+      ctx.restore();
+      // Smoke column — slow pulse rising upward
+      const smokeAlpha = 0.18 + 0.10 * Math.sin(Date.now() / 600);
+      ctx.save();
+      for (let i = 0; i < 3; i++) {
+        const oy = -(r * 1.2 + i * r * 0.9);
+        const ox = Math.sin(Date.now() / 800 + i) * r * 0.3;
+        const sr = r * (0.35 + i * 0.18);
+        ctx.beginPath();
+        ctx.arc(sx + ox, sy + oy, sr, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(30,30,30,${smokeAlpha - i * 0.04})`;
+        ctx.fill();
+      }
+      ctx.restore();
+      return;
+    }
 
     ctx.save();
 

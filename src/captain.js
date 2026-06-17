@@ -1,5 +1,6 @@
 import { addBullet, addImpact, addDeath } from './effects.js';
-import { SQUAD_SIZE } from './config.js';
+import { SQUAD_SIZE, PLATOON_SIZE } from './config.js';
+import { Lieutenant } from './lieutenant.js';
 
 const RADIUS           = 8;
 const MOVE_SPEED       = 35;
@@ -433,7 +434,9 @@ export class Captain {
     this.lieutenants    = [];
     this.scouts         = [];
     this._commandSquads = [];
-    this._promotedScouts = [];
+    this._promotedScouts    = [];
+    this._promotedLts       = [];
+    this._pendingPromotions = [];
 
     // Phase machine
     this._phase            = 'forming';
@@ -509,6 +512,12 @@ export class Captain {
     return this;
   }
 
+  attachRadioOperator(ro) {
+    this.radioOperator = ro;
+    ro.commandingOfficer = this;
+    return this;
+  }
+
   setObjective(x, y, name = 'objective') {
     this._objective     = { x, y };
     this._objectiveName = name;
@@ -526,10 +535,30 @@ export class Captain {
 
   // ── Incoming reports ────────────────────────────────────────────────────────
 
-  receiveSightingReport(pos) {
-    const now = Date.now() / 1000;
-    this._sightings.push({ x: pos.x, y: pos.y, time: now });
+  // Merges nearby sightings within 150px; updates count upward so arriving reinforcements
+  // are reflected correctly instead of being hard-locked to the original slot count.
+  _addSighting(x, y, count = 1) {
+    const now      = Date.now() / 1000;
+    const MERGE_R2 = 150 * 150;
+    let nearest = null, nearestD2 = MERGE_R2;
+    for (const s of this._sightings) {
+      const dx = s.x - x, dy = s.y - y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 < nearestD2) { nearestD2 = d2; nearest = s; }
+    }
+    if (nearest) {
+      nearest.x     = x;
+      nearest.y     = y;
+      nearest.time  = now;
+      nearest.count = Math.max(nearest.count, count);
+    } else {
+      this._sightings.push({ x, y, time: now, count });
+    }
     this._sightings = this._sightings.filter(s => now - s.time < SIGHTING_MAX_AGE);
+  }
+
+  receiveSightingReport(pos) {
+    this._addSighting(pos.x, pos.y, pos.count ?? 1);
     this._lastContactPos = { x: pos.x, y: pos.y };
     this._noContactTimer = 0;
     if (!this._hasContact) this._hasContact = true;
@@ -544,9 +573,7 @@ export class Captain {
     if (lt.lastReport?.enemyPosition) {
       const pos = lt.lastReport.enemyPosition;
       this._lastContactPos = { ...pos };
-      const now = Date.now() / 1000;
-      this._sightings.push({ x: pos.x, y: pos.y, time: now });
-      this._sightings = this._sightings.filter(s => now - s.time < SIGHTING_MAX_AGE);
+      this._addSighting(pos.x, pos.y, lt.lastReport.opposition ?? 1);
     }
     // Track armor contact — always reported immediately
     if (lt.lastReport?.hasArmorContact) {
@@ -576,6 +603,7 @@ export class Captain {
     if (this._shootCooldown  > 0) this._shootCooldown  -= dt;
 
     this._checkPromotions();
+    this._tickPendingPromotions();
     this._checkScoutPromotion();
     this._updateAttachment(dt);
 
@@ -1544,14 +1572,53 @@ export class Captain {
     for (const lt of this.lieutenants) {
       if (lt.active || lt._captainPromotionHandled) continue;
       lt._captainPromotionHandled = true;
-      if (!lt.sergeants) continue; // already a promoted sergeant, no sub-sergeants
+      if (!lt.sergeants) continue;
       const survivors = lt.sergeants.filter(s => s.active);
       if (!survivors.length) continue;
-      const promoted = survivors[0];
-      promoted.commandingOfficer = this;
-      promoted._isPromotedToLt   = true;
-      this.lieutenants.push(promoted);
+
+      const sgt      = survivors[0];
+      const otherSgts = survivors.slice(1, PLATOON_SIZE);
+      const trooper  = sgt.soldiers.find(s => s.active);
+
+      if (trooper) {
+        // Walk trooper to sergeant's position; LT spawns when they arrive
+        trooper.setMoveTarget(sgt.x, sgt.y);
+        this._pendingPromotions.push({ trooper, sgt, otherSgts });
+      } else {
+        this._executeLtPromotion(sgt, otherSgts);
+      }
     }
+  }
+
+  _executeLtPromotion(sgt, otherSgts) {
+    const newLt = new Lieutenant(sgt.x, sgt.y, this.factionId, sgt.facing, this.color);
+    newLt.commandingOfficer = this;
+    sgt.commandingOfficer = newLt;
+    newLt.sergeants.push(sgt);
+    otherSgts.forEach(s => {
+      s.commandingOfficer = newLt;
+      newLt.sergeants.push(s);
+    });
+    this.lieutenants.push(newLt);
+    this._promotedLts.push(newLt);
+  }
+
+  _tickPendingPromotions() {
+    this._pendingPromotions = this._pendingPromotions.filter(p => {
+      const { trooper, sgt, otherSgts } = p;
+      // Trooper was killed before arriving — promote without the walk animation
+      if (!trooper.active) {
+        this._executeLtPromotion(sgt, otherSgts);
+        return false;
+      }
+      const dx = trooper.x - sgt.x, dy = trooper.y - sgt.y;
+      if (dx * dx + dy * dy < 20 * 20) {
+        trooper.state = 'dead'; // trooper consumed — the LT appears in their place
+        this._executeLtPromotion(sgt, otherSgts);
+        return false;
+      }
+      return true; // still walking
+    });
   }
 
   _countActiveTroops() {
@@ -1602,7 +1669,7 @@ export class Captain {
     const recent       = this._sightings.filter(s => now - s.time < 15);
     const clusters     = this._countContactClusters(recent, 500);
     const myStrength   = this._countActiveTroops();
-    const enemyEst     = recent.length;
+    const enemyEst     = recent.reduce((s, sig) => s + (sig.count || 1), 0);
     const bias         = this._personality?.aggressionBias ?? 0;
     const troopRatio   = myStrength / Math.max(1, this._battleStartTroops);
 
@@ -1643,7 +1710,7 @@ export class Captain {
     const recent   = this._sightings.filter(s => now - s.time < 10);
     const clusters = this._countContactClusters(recent, 500);
     const myStrength  = this._countActiveTroops();
-    const enemyEstimate = recent.length;
+    const enemyEstimate = recent.reduce((s, sig) => s + (sig.count || 1), 0);
 
     const bias = this._personality?.aggressionBias ?? 0;
     if (clusters >= 3 || enemyEstimate > myStrength * (1.2 - bias)) {
@@ -1702,7 +1769,7 @@ export class Captain {
         const d  = dx * dx + dy * dy;
         if (d < bestD) { bestD = d; bestIdx = i; }
       }
-      remaining[bestIdx].setMoveTarget(pos.x, pos.y);
+      remaining[bestIdx].orderAssault(pos.x, pos.y);
       remaining.splice(bestIdx, 1);
     }
 
@@ -1770,30 +1837,32 @@ export class Captain {
     const now     = Date.now() / 1000;
     const threats = this._sightings.filter(s => now - s.time < 30);
     const via     = this._safeRouteWaypoint(this.x, this.y, dest, threats);
-    const perp    = this._marchDir + Math.PI / 2;
-    let   slot    = 0;
 
+    const orphans = [];
     for (const lt of this.lieutenants) {
       if (lt.sergeants) {
         for (const sgt of lt.sergeants) {
-          if (sgt.active) continue; // alive sergeant handles its own soldiers via recallTo
+          if (sgt.active) continue;
           for (const sol of (sgt.soldiers || [])) {
-            if (!sol.active) continue;
-            const off = (slot - 1) * 40;
-            sol.setMoveTarget(via.x + Math.cos(perp) * off, via.y + Math.sin(perp) * off);
-            slot++;
+            if (sol.active) orphans.push(sol);
           }
         }
       } else if (!lt.active && lt.soldiers) {
-        // Promoted sergeant acting as LT is dead — order its soldiers directly
         for (const sol of lt.soldiers) {
-          if (!sol.active) continue;
-          const off = (slot - 1) * 40;
-          sol.setMoveTarget(via.x + Math.cos(perp) * off, via.y + Math.sin(perp) * off);
-          slot++;
+          if (sol.active) orphans.push(sol);
         }
       }
     }
+
+    const cols = Math.ceil(Math.sqrt(orphans.length));
+    orphans.forEach((sol, i) => {
+      const col = i % cols;
+      const row = Math.floor(i / cols);
+      sol.setMoveTarget(
+        via.x + (col - (cols - 1) / 2) * 40,
+        via.y + (row - (Math.ceil(orphans.length / cols) - 1) / 2) * 40,
+      );
+    });
   }
 
   _safeRouteWaypoint(fromX, fromY, dest, threats) {

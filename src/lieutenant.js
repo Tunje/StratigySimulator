@@ -72,6 +72,24 @@ export class Lieutenant {
     return this;
   }
 
+  attachStaffSergeant(ss) {
+    this.staffSergeant = ss;
+    ss.commandingOfficer = this;
+    return this;
+  }
+
+  // Called by StaffSergeant once per visible enemy — updates our centroid estimate
+  receiveStaffSighting(pos) {
+    this._enemyCentroid = { x: pos.x, y: pos.y };
+  }
+
+  // Called by StaffSergeant when contact state changes — trigger immediate assess
+  receiveStaffContactChange(ss, hasContact, enemy) {
+    if (!hasContact || !this._cachedAllUnits) return;
+    this._assess(this._cachedAllUnits, this._cachedFactionMgr);
+    this._assessTimer = rand(ASSESS_MIN, ASSESS_MAX);
+  }
+
   // Called immediately by a sergeant when contact is made or cleared
   receiveContactReport(sergeant) {
     if (!this._cachedAllUnits) return;
@@ -97,6 +115,22 @@ export class Lieutenant {
     const positions       = spreadPositions(aheadX, aheadY, angle, SQUAD_SPREAD, activeSergeants.length);
     activeSergeants.forEach((sgt, i) => sgt.setMoveTarget(positions[i].x, positions[i].y));
     this._moveTarget = { x, y };
+  }
+
+  // Captain assault order — advances LT despite being in contact;
+  // uses _forcedMoveTarget so the contact movement guard is bypassed,
+  // and orders sergeants forward with setMoveTarget (not recallTo) so
+  // they move+fight rather than leapfrog-withdraw.
+  orderAssault(x, y) {
+    if (!this.active) return;
+    this._forcedMoveTarget = { x, y };
+    const angle           = Math.atan2(y - this.y, x - this.x);
+    const activeSergeants = this.sergeants.filter(s => s.active);
+    const aheadX          = x + Math.cos(angle) * 80;
+    const aheadY          = y + Math.sin(angle) * 80;
+    const positions       = spreadPositions(aheadX, aheadY, angle, SQUAD_SPREAD, activeSergeants.length);
+    activeSergeants.forEach((sgt, i) => sgt.setMoveTarget(positions[i].x, positions[i].y));
+    this._tactic = 'attack';
   }
 
   // Captain recall — bypasses the contact movement guard so lts consolidate even under fire
@@ -246,7 +280,7 @@ export class Lieutenant {
       if (sgt.lastReport.enemyPosition) enemyPositions.push(sgt.lastReport.enemyPosition);
     }
 
-    // Secondary: own vision via _canSee — only used when no sergeant is reporting,
+    // Secondary: own vision + staff sergeant — only used when no sergeant is reporting,
     // so we don't double-count enemies the sergeants already saw.
     let ownSightCount = 0;
     if (!sgtsReporting) {
@@ -257,6 +291,11 @@ export class Lieutenant {
         if (!this._canSee(u)) continue;
         ownSightCount++;
         enemyPositions.push({ x: u.x, y: u.y });
+      }
+      // Staff sergeant extends our awareness when our own sight is limited
+      if (this.staffSergeant?.active && this.staffSergeant._visibleCount > ownSightCount) {
+        ownSightCount = this.staffSergeant._visibleCount;
+        if (this.staffSergeant._lastEnemyPos) enemyPositions.push(this.staffSergeant._lastEnemyPos);
       }
     }
 
@@ -520,9 +559,10 @@ export class Lieutenant {
     const totalTroops = activeSgts.reduce(
       (s, sgt) => s + (sgt.lastReport ? sgt.lastReport.troops : 0), 0
     );
-    const totalOpposition = activeSgts.reduce(
-      (s, sgt) => s + (sgt.lastReport ? sgt.lastReport.opposition : 0), 0
-    );
+    // Use _knownActiveEnemies (already MAX-deduped across sergeant reports) rather
+    // than summing all sergeant counts — the sum inflates when multiple sergeants
+    // see the same enemies simultaneously.
+    const totalOpposition = this._knownActiveEnemies;
 
     const enemyPos = this._enemyCentroid
       ? { ...this._enemyCentroid }

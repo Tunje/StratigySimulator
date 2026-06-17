@@ -34,6 +34,8 @@ export class APC {
     this._clearTimer     = 0;
     this._recalling      = false;
     this._sergeant       = null; // Officer attached as dismount squad
+    this._reportCooldown = 0;
+    this.commandingOfficer = null;
   }
 
   get active()      { return this.state === 'active';  }
@@ -69,6 +71,12 @@ export class APC {
 
     const visible = enemies.filter(e => this._canSee(e));
     this._lockedTarget = visible.length > 0 ? nearest(this, visible) : null;
+
+    if (this._reportCooldown > 0) this._reportCooldown -= dt;
+    if (this._lockedTarget && this._reportCooldown <= 0) {
+      this.commandingOfficer?.receiveSightingReport({ x: this._lockedTarget.x, y: this._lockedTarget.y });
+      this._reportCooldown = 3.0;
+    }
 
     // Dismount when enemies close
     if (nearbyCount > 0 && !this._dismounted) {
@@ -144,7 +152,7 @@ export class APC {
       }
     }
 
-    // Separation — keep APCs from stacking on top of infantry
+    // Separation — only along facing axis so APCs never drift sideways
     {
       const SEP = APC_RADIUS * 3;
       let px = 0, py = 0;
@@ -159,8 +167,10 @@ export class APC {
       }
       const len = Math.sqrt(px * px + py * py);
       if (len > 0.01) {
-        this.x += (px / len) * APC_SPEED * 0.4 * dt;
-        this.y += (py / len) * APC_SPEED * 0.4 * dt;
+        const fwdX = Math.cos(this.facing), fwdY = Math.sin(this.facing);
+        const proj = (px * fwdX + py * fwdY) / len;
+        this.x += fwdX * proj * APC_SPEED * 0.4 * dt;
+        this.y += fwdY * proj * APC_SPEED * 0.4 * dt;
       }
     }
   }

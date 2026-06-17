@@ -27,6 +27,8 @@ export class Tank {
     this._shootCooldown  = rand(1.0, FIRE_RATE);
     this._underFireTimer = 0;
     this._turretOffset   = 0; // relative to hull facing
+    this._reportCooldown = 0;
+    this.commandingOfficer = null;
   }
 
   get active()      { return this.state === 'active';  }
@@ -55,6 +57,12 @@ export class Tank {
     );
     const visible = enemies.filter(e => this._canSee(e));
     this._lockedTarget = visible.length > 0 ? nearest(this, visible) : null;
+
+    if (this._reportCooldown > 0) this._reportCooldown -= dt;
+    if (this._lockedTarget && this._reportCooldown <= 0) {
+      this.commandingOfficer?.receiveSightingReport({ x: this._lockedTarget.x, y: this._lockedTarget.y });
+      this._reportCooldown = 3.0;
+    }
 
     // Turret tracks target
     if (this._lockedTarget) {
@@ -87,9 +95,9 @@ export class Tank {
       }
     }
 
-    // Separation — push away from nearby friendlies so tanks don't stack on infantry
+    // Separation — only along facing axis so tanks never drift sideways
     {
-      const SEP = TANK_RADIUS * 3.5;
+      const SEP  = TANK_RADIUS * 3.5;
       let px = 0, py = 0;
       for (const u of allUnits) {
         if (u === this || !u.active || u.factionId !== this.factionId) continue;
@@ -102,8 +110,10 @@ export class Tank {
       }
       const len = Math.sqrt(px * px + py * py);
       if (len > 0.01) {
-        this.x += (px / len) * TANK_SPEED * 0.55 * dt;
-        this.y += (py / len) * TANK_SPEED * 0.55 * dt;
+        const fwdX = Math.cos(this.facing), fwdY = Math.sin(this.facing);
+        const proj = (px * fwdX + py * fwdY) / len;
+        this.x += fwdX * proj * TANK_SPEED * 0.55 * dt;
+        this.y += fwdY * proj * TANK_SPEED * 0.55 * dt;
       }
     }
   }

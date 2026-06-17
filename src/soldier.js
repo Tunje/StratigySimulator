@@ -168,6 +168,19 @@ export class Soldier {
         this.moveTarget = null;
       }
     }
+
+    // Yield to friendly armor — step away from any tank or APC that drives into us
+    const ARMOR_CLEAR = 55;
+    for (const u of allUnits) {
+      if (u === this || !u.active || u.factionId !== this.factionId) continue;
+      if (!u.armorClass || u.armorClass === 'none') continue;
+      const dx = this.x - u.x, dy = this.y - u.y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 === 0 || d2 >= ARMOR_CLEAR * ARMOR_CLEAR) continue;
+      const d = Math.sqrt(d2);
+      this.x += (dx / d) * (ARMOR_CLEAR - d) * 0.6;
+      this.y += (dy / d) * (ARMOR_CLEAR - d) * 0.6;
+    }
   }
 
   _shoutContact(allUnits, factionMgr) {

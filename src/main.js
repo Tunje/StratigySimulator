@@ -111,6 +111,7 @@ function createAttachment(cpt, x, y, factionId, facing, color) {
     const tanks = [-LT_SPACING, 0, LT_SPACING].map(off =>
       new Tank(x, y + off, factionId, facing, color)
     );
+    tanks.forEach(t => t.commandingOfficer = cpt);
     cpt.setAttachment('tanks', tanks);
     return tanks;
   }
@@ -129,6 +130,7 @@ function createAttachment(cpt, x, y, factionId, facing, color) {
       sgt._mounted  = true;
       sgt.soldiers.forEach(s => { s._mounted = true; });
     }
+    platoon.apcs.forEach(a => a.commandingOfficer = cpt);
     const allApcUnits = platoon.allUnits();
     cpt.setAttachment('mechanized', [platoon, ...allApcUnits]);
     return allApcUnits; // platoon wrapper isn't a drawn/updated unit itself
@@ -142,8 +144,17 @@ function createAttachment(cpt, x, y, factionId, facing, color) {
   const spotter = new Spotter(x + Math.cos(facing) * SGT_SPACING * 2, y + Math.sin(facing) * SGT_SPACING * 2, factionId, facing, color);
   spotter._captain = cpt;
   cpt.attachScout(spotter);
+
+  const crew1 = new Officer(cannon1.x, cannon1.y, factionId, facing, color);
+  SOL_Y.forEach(dy => crew1.attach(new Soldier(cannon1.x, cannon1.y + dy, factionId, facing, color)));
+  crew1.commandingOfficer = cpt;
+
+  const crew2 = new Officer(cannon2.x, cannon2.y, factionId, facing, color);
+  SOL_Y.forEach(dy => crew2.attach(new Soldier(cannon2.x, cannon2.y + dy, factionId, facing, color)));
+  crew2.commandingOfficer = cpt;
+
   cpt.setAttachment('artillery', [cannon1, cannon2, spotter]);
-  return [cannon1, cannon2, spotter]; // all three need to be in the game loop
+  return [cannon1, cannon2, spotter, crew1, crew2];
 }
 
 // ── Company factory — wraps all per-company unit creation ────────────────────
@@ -240,6 +251,14 @@ function integratePromotions() {
     for (const lt of newLts) {
       lieutenants.push(lt);
       allUnits.push(lt);
+    }
+  }
+  for (const cpt of captains) {
+    if (cpt._reconstitutedSgts.length === 0) continue;
+    const newSgts = cpt._reconstitutedSgts.splice(0);
+    for (const sgt of newSgts) {
+      officers.push(sgt);
+      allUnits.push(sgt);
     }
   }
 }

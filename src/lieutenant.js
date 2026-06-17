@@ -36,8 +36,9 @@ export class Lieutenant {
 
     this.sergeants = []; // attached Officer instances
 
-    this._tactic             = null;
-    this._hasContact         = false;
+    this._tactic                = null;
+    this._captainOrderedAssault = false;
+    this._hasContact            = false;
     this._assessTimer        = rand(2.0, 4.0);
     this._moveTarget         = null;
     this._enemyCentroid      = null;
@@ -123,19 +124,21 @@ export class Lieutenant {
   // they move+fight rather than leapfrog-withdraw.
   orderAssault(x, y) {
     if (!this.active) return;
-    this._forcedMoveTarget = { x, y };
+    this._forcedMoveTarget      = { x, y };
+    this._captainOrderedAssault = true;
     const angle           = Math.atan2(y - this.y, x - this.x);
     const activeSergeants = this.sergeants.filter(s => s.active);
     const aheadX          = x + Math.cos(angle) * 80;
     const aheadY          = y + Math.sin(angle) * 80;
     const positions       = spreadPositions(aheadX, aheadY, angle, SQUAD_SPREAD, activeSergeants.length);
-    activeSergeants.forEach((sgt, i) => sgt.setMoveTarget(positions[i].x, positions[i].y));
+    activeSergeants.forEach((sgt, i) => sgt.orderAssault(positions[i].x, positions[i].y));
     this._tactic = 'attack';
   }
 
   // Captain recall — bypasses the contact movement guard so lts consolidate even under fire
   recallTo(x, y) {
     if (!this.active) return;
+    this._captainOrderedAssault = false;
     this._forcedMoveTarget = { x, y };
     const angle           = Math.atan2(y - this.y, x - this.x);
     const activeSergeants = this.sergeants.filter(s => s.active);
@@ -235,6 +238,9 @@ export class Lieutenant {
     if (this._reportTimer <= 0) {
       this._generateReport();
       this._reportTimer = rand(10.0, 18.0);
+      if (this.commandingOfficer && this._knownActiveEnemies > 0) {
+        this.commandingOfficer.receiveContactReport(this);
+      }
     }
 
     // ── Reintegrate revived sergeants ─────────────────────────────────────────
@@ -394,10 +400,12 @@ export class Lieutenant {
       0
     ) + 1; // +1 for self
 
+    // With a captain assault order, lower the threshold — attack even at near-equal strength
+    const attackThreshold = this._captainOrderedAssault ? 0.9 : 1.25;
     let tactic;
     if (totalTroops < this._knownActiveEnemies * 0.8) {
       tactic = 'fallback';
-    } else if (totalTroops > this._knownActiveEnemies * 1.25) {
+    } else if (totalTroops > this._knownActiveEnemies * attackThreshold) {
       tactic = 'attack';
     } else {
       tactic = 'hold';

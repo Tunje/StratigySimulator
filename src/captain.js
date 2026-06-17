@@ -1,6 +1,7 @@
 import { addBullet, addImpact, addDeath } from './effects.js';
 import { SQUAD_SIZE, PLATOON_SIZE } from './config.js';
 import { Lieutenant } from './lieutenant.js';
+import { Officer } from './officer.js';
 
 const RADIUS           = 8;
 const MOVE_SPEED       = 35;
@@ -436,7 +437,9 @@ export class Captain {
     this._commandSquads = [];
     this._promotedScouts    = [];
     this._promotedLts       = [];
+    this._reconstitutedSgts = [];
     this._pendingPromotions = [];
+    this._reconstituted     = false;
 
     // Phase machine
     this._phase            = 'forming';
@@ -694,7 +697,7 @@ export class Captain {
             }
           }
         }
-        this._strategyCommitTimer = (this._strategyCommitTimer || 0) + dt;
+        this._strategyCommitTimer  = (this._strategyCommitTimer  || 0) + dt;
         // Order flanking lts to push in once they've reached their flank position
         this._orderFlankPushIfReady();
         if (this._ltsHaveNoContact()) {
@@ -1613,6 +1616,60 @@ export class Captain {
     this._promotedLts.push(newLt);
   }
 
+  _reconstitute() {
+    this._reconstituted = true;
+
+    // Find soldiers whose sergeant is dead AND whose lieutenant is also dead
+    // (_checkPromotions already handles dead-LT / live-sergeant cases)
+    const orphans = [];
+    for (const lt of this.lieutenants) {
+      if (lt.active) continue;
+      for (const sgt of (lt.sergeants || [])) {
+        if (sgt.active) continue;
+        for (const s of (sgt.soldiers || [])) {
+          if (s.active) orphans.push(s);
+        }
+      }
+    }
+
+    if (orphans.length < 1) return;
+
+    const newSgts = [];
+
+    // Group orphans into squads of SQUAD_SIZE; first member becomes an Officer
+    for (let i = 0; i < orphans.length; i += SQUAD_SIZE) {
+      const chunk  = orphans.slice(i, i + SQUAD_SIZE);
+      const leader = chunk[0];
+
+      // Consume the leading trooper; spawn an Officer at their position
+      leader.state = 'dead';
+      const newSgt = new Officer(leader.x, leader.y, this.factionId, leader.facing, this.color);
+      newSgt.commandingOfficer = null; // assigned below when LT is created
+
+      chunk.slice(1).forEach(s => {
+        s.commandingOfficer = newSgt;
+        newSgt.soldiers.push(s);
+      });
+
+      newSgts.push(newSgt);
+      this._reconstitutedSgts.push(newSgt);
+    }
+
+    // Group new sergeants into platoons of PLATOON_SIZE; create a Lieutenant per platoon
+    for (let i = 0; i < newSgts.length; i += PLATOON_SIZE) {
+      const platoon  = newSgts.slice(i, i + PLATOON_SIZE);
+      const firstSgt = platoon[0];
+      const newLt    = new Lieutenant(firstSgt.x, firstSgt.y, this.factionId, firstSgt.facing, this.color);
+      newLt.commandingOfficer = this;
+      platoon.forEach(sgt => {
+        sgt.commandingOfficer = newLt;
+        newLt.sergeants.push(sgt);
+      });
+      this.lieutenants.push(newLt);
+      this._promotedLts.push(newLt);
+    }
+  }
+
   _tickPendingPromotions() {
     this._pendingPromotions = this._pendingPromotions.filter(p => {
       const { trooper, sgt, otherSgts } = p;
@@ -1917,6 +1974,7 @@ export class Captain {
     this._reorderTimer     = 0;
     this._lastReorderPulse = 0;
     this._tactic           = 'reordering';
+    this._reconstituted    = false;
 
     const rallyBase = this._rallyPoint || this._currentWpt || { x: this.x, y: this.y };
 
@@ -1951,6 +2009,7 @@ export class Captain {
     }
 
     this._promoteAndDeployForwardScouts();
+    this._reconstitute();
   }
 
   // Periodic re-pulse during reordering — catches units still en route

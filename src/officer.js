@@ -125,6 +125,21 @@ export class Officer {
     });
   }
 
+  // Captain assault order — pushes through contact using _forcedMoveTarget
+  orderAssault(x, y) {
+    if (!this.active) return;
+    this._marchDir         = Math.atan2(y - this.y, x - this.x);
+    this._forcedMoveTarget = { x: x - Math.cos(this._marchDir) * 70,
+                               y: y - Math.sin(this._marchDir) * 70 };
+    const active = this.soldiers.filter(s => s.active);
+    const perp   = this._marchDir + Math.PI / 2;
+    active.forEach((s, i) => {
+      if (s._lockedTarget) return;
+      const off = (i - (active.length - 1) / 2) * ATTACK_SPREAD;
+      s.setMoveTarget(x + Math.cos(perp) * off, y + Math.sin(perp) * off);
+    });
+  }
+
   // Called by lieutenant to order a fighting withdrawal
   recallTo(x, y) {
     if (!this.active) return;

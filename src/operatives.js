@@ -7,6 +7,12 @@ const FIRE_RATE_MAX      = 4.5;
 const RADIUS             = 8;
 const REPORT_INTV        = 1.5; // s between repeated sighting reports
 const OPERATIVE_ENGAGE   = 150; // sidearm range — far shorter than observation range
+const ALERT_RANGE        = 250;
+const HEAD_TURN_TARGETS  = [-Math.PI * 0.38, 0, Math.PI * 0.38];
+const HEAD_TURN_SPEED    = 1.6;
+const HEAD_LOCK_SPEED    = 4.0;
+const HEAD_TURN_HOLD_MIN = 1.2;
+const HEAD_TURN_HOLD_MAX = 4.0;
 
 // Sight radii (world px)
 export const CORPORAL_SIGHT  = 330;  // 1.5 × soldier 220
@@ -53,6 +59,10 @@ class Operative {
     this._lockedTarget   = null;
     this._shootCooldown  = rand(1.0, FIRE_RATE_MAX);
     this._headOffset     = 0;
+    this._headTarget     = 0;
+    this._headTimer      = rand(HEAD_TURN_HOLD_MIN, HEAD_TURN_HOLD_MAX);
+    this._alertDir       = 0;
+    this._alertTimer     = 0;
     this._underFireTimer = 0;
   }
 
@@ -61,13 +71,17 @@ class Operative {
   get injured() { return this.state === 'injured'; }
 
   markUnderFire() { if (this.active) this._underFireTimer = 4.0; }
-  receiveContactAlert() {}  // operatives scan wide — ignore buddy alerts
+
+  receiveContactAlert(direction) {
+    if (!this.active || this._lockedTarget) return;
+    this._alertDir   = direction;
+    this._alertTimer = 4.0;
+  }
 
   _canSee(other) {
     const dx = other.x - this.x, dy = other.y - this.y;
     if (dx*dx + dy*dy > this._sightRadius * this._sightRadius) return false;
-    // Wide 260° arc — dedicated observers face outward
-    const diff = Math.abs(normalizeAngle(Math.atan2(dy, dx) - this.facing));
+    const diff = Math.abs(normalizeAngle(Math.atan2(dy, dx) - (this.facing + this._headOffset)));
     return diff < Math.PI * 0.72;
   }
 
@@ -110,13 +124,18 @@ class Operative {
           y: enemies.reduce((s, e) => s + e.y, 0) / enemies.length }
       : null;
 
-    // Shooting range is much shorter than observation range — operatives carry sidearms only
-    const r2engage     = OPERATIVE_ENGAGE * OPERATIVE_ENGAGE;
-    const inRange      = enemies.filter(u => {
+    const r2engage  = OPERATIVE_ENGAGE * OPERATIVE_ENGAGE;
+    const inRange   = enemies.filter(u => {
       const dx = u.x - this.x, dy = u.y - this.y;
       return dx * dx + dy * dy <= r2engage;
     });
+    const prevLocked   = this._lockedTarget;
     this._lockedTarget = inRange.length > 0 ? nearest(this, inRange) : null;
+
+    if (!prevLocked && this._lockedTarget) {
+      this._alertTimer = 0;
+      this._shoutContact(allUnits, factionMgr);
+    }
 
     const wasContact = this._inContact;
     this._inContact  = enemies.length > 0;
@@ -130,10 +149,49 @@ class Operative {
       this._onContactChange(this._inContact, enemies);
     }
 
-    // Light self-defence only — operatives are not frontline fighters
     if (this._lockedTarget && this._shootCooldown <= 0) {
       this._shoot(this._lockedTarget);
       this._shootCooldown = rand(FIRE_RATE_MIN, FIRE_RATE_MAX);
+    }
+
+    // Head movement
+    if (this._lockedTarget) {
+      const desired = normalizeAngle(
+        Math.atan2(this._lockedTarget.y - this.y, this._lockedTarget.x - this.x) - this.facing
+      );
+      const diff = normalizeAngle(desired - this._headOffset);
+      const step = HEAD_LOCK_SPEED * dt;
+      this._headOffset = Math.abs(diff) <= step ? desired : this._headOffset + Math.sign(diff) * step;
+      this._headTimer  = rand(HEAD_TURN_HOLD_MIN, HEAD_TURN_HOLD_MAX);
+    } else if (this._alertTimer > 0) {
+      this._alertTimer -= dt;
+      const desired = normalizeAngle(this._alertDir - this.facing);
+      const diff    = normalizeAngle(desired - this._headOffset);
+      const step    = HEAD_LOCK_SPEED * dt;
+      this._headOffset = Math.abs(diff) <= step ? desired : this._headOffset + Math.sign(diff) * step;
+      this._headTimer  = rand(HEAD_TURN_HOLD_MIN, HEAD_TURN_HOLD_MAX);
+    } else {
+      this._headTimer -= dt;
+      if (this._headTimer <= 0) {
+        const opts       = HEAD_TURN_TARGETS.filter(t => Math.abs(t - this._headTarget) > 0.1);
+        this._headTarget = opts[Math.floor(Math.random() * opts.length)];
+        this._headTimer  = rand(HEAD_TURN_HOLD_MIN, HEAD_TURN_HOLD_MAX);
+      }
+      const diff = normalizeAngle(this._headTarget - this._headOffset);
+      const step = HEAD_TURN_SPEED * dt;
+      this._headOffset = Math.abs(diff) <= step ? this._headTarget : this._headOffset + Math.sign(diff) * step;
+    }
+  }
+
+  _shoutContact(allUnits, factionMgr) {
+    const dir = Math.atan2(this._lockedTarget.y - this.y, this._lockedTarget.x - this.x);
+    const r2  = ALERT_RANGE * ALERT_RANGE;
+    for (const u of allUnits) {
+      if (u === this || !u.active || factionMgr.areEnemies(this.factionId, u.factionId)) continue;
+      if (typeof u.receiveContactAlert !== 'function') continue;
+      const dx = u.x - this.x, dy = u.y - this.y;
+      if (dx * dx + dy * dy > r2) continue;
+      u.receiveContactAlert(dir);
     }
   }
 
@@ -198,14 +256,24 @@ export class Corporal extends Operative {
     ctx.save();
 
     if (showCones && this.active) {
+      const lookAngle = this.facing + this._headOffset;
       ctx.beginPath();
       ctx.moveTo(sx, sy);
       ctx.arc(sx, sy, CORPORAL_SIGHT * zoom,
-        this.facing - Math.PI * 0.72, this.facing + Math.PI * 0.72);
+        lookAngle - Math.PI * 0.72, lookAngle + Math.PI * 0.72);
       ctx.closePath();
       ctx.fillStyle = this._inContact
         ? 'rgba(255,200,80,0.06)' : 'rgba(80,255,180,0.04)';
       ctx.fill();
+    }
+
+    if (this.active && this._underFireTimer > 0) {
+      const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 120);
+      ctx.beginPath();
+      ctx.arc(sx, sy, r + 4 * zoom, 0, Math.PI * 2);
+      ctx.strokeStyle = `rgba(255, 60, 60, ${0.4 + pulse * 0.4})`;
+      ctx.lineWidth   = Math.max(1, zoom);
+      ctx.stroke();
     }
 
     // Thin teal rank ring — distinguishes corporal from regular soldier
@@ -225,8 +293,9 @@ export class Corporal extends Operative {
     ctx.stroke();
 
     // Head dot — teal when observing, amber when in contact
-    const dotX = sx + Math.cos(this.facing) * r * 0.55;
-    const dotY = sy + Math.sin(this.facing) * r * 0.55;
+    const lookAngle = this.facing + this._headOffset;
+    const dotX = sx + Math.cos(lookAngle) * r * 0.55;
+    const dotY = sy + Math.sin(lookAngle) * r * 0.55;
     ctx.beginPath();
     ctx.arc(dotX, dotY, r * 0.28, 0, Math.PI * 2);
     ctx.fillStyle = this._inContact ? 'rgba(255,200,80,0.9)' : 'rgba(60,210,160,0.85)';
@@ -278,14 +347,24 @@ export class StaffSergeant extends Operative {
     ctx.save();
 
     if (showCones && this.active) {
+      const lookAngle = this.facing + this._headOffset;
       ctx.beginPath();
       ctx.moveTo(sx, sy);
       ctx.arc(sx, sy, STAFF_SGT_SIGHT * zoom,
-        this.facing - Math.PI * 0.72, this.facing + Math.PI * 0.72);
+        lookAngle - Math.PI * 0.72, lookAngle + Math.PI * 0.72);
       ctx.closePath();
       ctx.fillStyle = this._inContact
         ? 'rgba(255,200,80,0.04)' : 'rgba(80,160,255,0.03)';
       ctx.fill();
+    }
+
+    if (this.active && this._underFireTimer > 0) {
+      const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 120);
+      ctx.beginPath();
+      ctx.arc(sx, sy, r + 4 * zoom, 0, Math.PI * 2);
+      ctx.strokeStyle = `rgba(255, 60, 60, ${0.4 + pulse * 0.4})`;
+      ctx.lineWidth   = Math.max(1, zoom);
+      ctx.stroke();
     }
 
     // Blue double ring — observer variant of the lieutenant ring pattern
@@ -310,8 +389,9 @@ export class StaffSergeant extends Operative {
     ctx.stroke();
 
     // Head dot
-    const dotX = sx + Math.cos(this.facing) * r * 0.55;
-    const dotY = sy + Math.sin(this.facing) * r * 0.55;
+    const lookAngle = this.facing + this._headOffset;
+    const dotX = sx + Math.cos(lookAngle) * r * 0.55;
+    const dotY = sy + Math.sin(lookAngle) * r * 0.55;
     ctx.beginPath();
     ctx.arc(dotX, dotY, r * 0.28, 0, Math.PI * 2);
     ctx.fillStyle = this._inContact ? 'rgba(255,200,80,0.9)' : 'rgba(60,160,255,0.85)';

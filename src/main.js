@@ -145,12 +145,23 @@ function createAttachment(cpt, x, y, factionId, facing, color) {
   spotter._captain = cpt;
   cpt.attachScout(spotter);
 
-  const crew1 = new Officer(cannon1.x, cannon1.y, factionId, facing, color);
-  SOL_Y.forEach(dy => crew1.attach(new Soldier(cannon1.x, cannon1.y + dy, factionId, facing, color)));
+  const backX = -Math.cos(facing) * SGT_SPACING;
+  const backY = -Math.sin(facing) * SGT_SPACING;
+
+  const crew1 = new Officer(cannon1.x + backX, cannon1.y + backY, factionId, facing, color);
+  SOL_Y.forEach(dy => crew1.attach(new Soldier(
+    cannon1.x + backX + Math.cos(perp) * dy,
+    cannon1.y + backY + Math.sin(perp) * dy,
+    factionId, facing, color
+  )));
   crew1.commandingOfficer = cpt;
 
-  const crew2 = new Officer(cannon2.x, cannon2.y, factionId, facing, color);
-  SOL_Y.forEach(dy => crew2.attach(new Soldier(cannon2.x, cannon2.y + dy, factionId, facing, color)));
+  const crew2 = new Officer(cannon2.x + backX, cannon2.y + backY, factionId, facing, color);
+  SOL_Y.forEach(dy => crew2.attach(new Soldier(
+    cannon2.x + backX + Math.cos(perp) * dy,
+    cannon2.y + backY + Math.sin(perp) * dy,
+    factionId, facing, color
+  )));
   crew2.commandingOfficer = cpt;
 
   cpt.setAttachment('artillery', [cannon1, cannon2, spotter]);
@@ -377,9 +388,23 @@ window.addEventListener('resize', () => { resize(); camera._clamp(canvas.width, 
 // ── Minimap ───────────────────────────────────────────────────────────────────
 function drawMinimap() {
   map.renderMinimap(miniCanvas);
+  const mw      = miniCanvas.width;
+  const mh      = miniCanvas.height;
+  const worldW  = MAP_W * 32;
+  const worldH  = MAP_H * 32;
+  const scaleX  = mw / worldW;
+  const scaleY  = mh / worldH;
+
+  for (const u of allUnits) {
+    if (!u.active) continue;
+    const mx = u.x * scaleX;
+    const my = u.y * scaleY;
+    miniCtx.fillStyle = u.color || '#fff';
+    miniCtx.fillRect(mx - 1, my - 1, 2, 2);
+  }
+
+  // Viewport rect
   const vp = camera.viewportRect();
-  const mw = miniCanvas.width;
-  const mh = miniCanvas.height;
   miniCtx.strokeStyle = 'rgba(255, 220, 80, 0.9)';
   miniCtx.lineWidth   = 1.5;
   miniCtx.strokeRect(vp.x * mw, vp.y * mh, Math.min(vp.w * mw, mw), Math.min(vp.h * mh, mh));

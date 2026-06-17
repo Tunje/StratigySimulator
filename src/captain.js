@@ -576,7 +576,7 @@ export class Captain {
     this._noContactTimer = 0;
     if (!this._hasContact) this._hasContact = true;
     // Re-engage from any non-committed phase — a scout report means enemies are real and present
-    const nonCommitted = ['scouting', 'advancing', 'moving_up', 'rallying', 'reordering', 'holding', 'consolidating'];
+    const nonCommitted = ['scouting', 'advancing', 'moving_up', 'rallying', 'holding', 'consolidating'];
     if (nonCommitted.includes(this._phase)) {
       this._enterContact();
     }
@@ -598,7 +598,7 @@ export class Captain {
     this._noContactTimer = 0;
     if (!this._hasContact) this._hasContact = true;
     // Re-engage from any non-committed phase — an LT report means live contact
-    const nonCommitted = ['scouting', 'advancing', 'moving_up', 'rallying', 'reordering', 'holding', 'consolidating'];
+    const nonCommitted = ['scouting', 'advancing', 'moving_up', 'rallying', 'holding', 'consolidating'];
     if (nonCommitted.includes(this._phase)) {
       this._enterContact();
     }
@@ -752,7 +752,8 @@ export class Captain {
         if (this._reorderTimer >= REORDER_TIME) {
           this._reformFormation();
           this._checkPromotions();
-          if (this._battleWon) {
+          const remaining = this._countActiveTroops();
+          if (remaining >= Math.max(1, this._battleStartTroops * 0.20)) {
             this._waypointIdx++;
             this._startScouting();
           } else {
@@ -771,7 +772,7 @@ export class Captain {
             this._fallBackTimer = 0;
             const remaining = this._countActiveTroops();
             // If most force intact, try again — fallback is a tactical pause not a retreat
-            if (remaining >= Math.max(1, this._battleStartTroops * 0.60)) {
+            if (remaining >= Math.max(1, this._battleStartTroops * 0.20)) {
               this._startScouting();
             } else {
               this._phase               = 'holding';
@@ -2121,7 +2122,10 @@ export class Captain {
 
     // Traded well (killed more than lost) → won; traded badly → lost
     // If no contact at all (both zero), treat as won to avoid false retreats
-    this._battleWon = (enemyKillsEst >= ownLosses) || (enemyKillsEst === 0 && ownLosses === 0);
+    // Also treat as won if 60%+ of force is still standing — kill estimates from LTs
+    // are unreliable so don't retreat a largely intact force on bad intel
+    const forceIntact = remaining >= this._battleStartTroops * 0.60;
+    this._battleWon = forceIntact || (enemyKillsEst >= ownLosses) || (enemyKillsEst === 0 && ownLosses === 0);
 
     // Win → hold the position just taken; Loss → fall back to last safe sector
     const rallyBase = this._battleWon

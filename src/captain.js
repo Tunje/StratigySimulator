@@ -987,25 +987,27 @@ export class Captain {
 
     } else if (this._attachmentType === 'mechanized') {
       const platoon = this._attachmentUnits[0];
-      if (!platoon || !platoon.active) return;
-      // Flank staging position: just outside the infantry formation edge
       const flankOff = formHalf + LT_WPT_SPREAD;
 
+      let destX, destY;
       if (['flanking', 'mopping_up'].includes(this._phase) && epos) {
-        // Infantry has fixed the enemy — APCs execute the envelopment around their flank
         const toEnemy   = Math.atan2(epos.y - this.y, epos.x - this.x);
         const enemyPerp = toEnemy + Math.PI / 2;
-        platoon.setMoveTarget(
-          epos.x + Math.cos(enemyPerp) * flankOff + Math.cos(toEnemy) * LT_WPT_SPREAD * 0.5,
-          epos.y + Math.sin(enemyPerp) * flankOff + Math.sin(toEnemy) * LT_WPT_SPREAD * 0.5,
-        );
+        destX = epos.x + Math.cos(enemyPerp) * flankOff + Math.cos(toEnemy) * LT_WPT_SPREAD * 0.5;
+        destY = epos.y + Math.sin(enemyPerp) * flankOff + Math.sin(toEnemy) * LT_WPT_SPREAD * 0.5;
       } else {
-        // Advancing or contact assessment — keep pace with the infantry line, not the captain
         const wpt = this._currentWpt || { x: this.x, y: this.y };
-        platoon.setMoveTarget(
-          wpt.x + Math.cos(perp) * flankOff,
-          wpt.y + Math.sin(perp) * flankOff,
-        );
+        destX = wpt.x + Math.cos(perp) * flankOff;
+        destY = wpt.y + Math.sin(perp) * flankOff;
+      }
+
+      if (platoon?.active) platoon.setMoveTarget(destX, destY);
+
+      // Sergeants from dead APCs have lost their ride — order them to the same destination
+      for (const unit of this._attachmentUnits) {
+        if (unit._sergeant?.active && !unit.active) {
+          unit._sergeant.setMoveTarget(destX, destY);
+        }
       }
 
     } else if (this._attachmentType === 'artillery') {
@@ -2021,6 +2023,10 @@ export class Captain {
           if (sol.active && !sol._mounted) orphans.push(sol);
         }
       }
+    }
+    // Command squads (staff sergeants) report directly to captain — order them directly
+    for (const sgt of this._commandSquads) {
+      if (sgt.active) sgt.setMoveTarget(via.x, via.y);
     }
 
     const cols = Math.ceil(Math.sqrt(orphans.length));

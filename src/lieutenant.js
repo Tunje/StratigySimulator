@@ -118,6 +118,7 @@ export class Lieutenant {
     activeSergeants.forEach((sgt, i) => sgt.setMoveTarget(positions[i].x, positions[i].y));
     this._moveTarget = { x: x - Math.cos(angle) * 150,
                          y: y - Math.sin(angle) * 150 };
+    if (this.staffSergeant?.active) this.staffSergeant.setMoveTarget(x, y);
   }
 
   // Captain assault order — advances LT despite being in contact;
@@ -151,6 +152,7 @@ export class Lieutenant {
     const aheadY          = y + Math.sin(angle) * 80;
     const positions       = spreadPositions(aheadX, aheadY, angle, SQUAD_SPREAD, activeSergeants.length);
     activeSergeants.forEach((sgt, i) => sgt.recallTo(positions[i].x, positions[i].y));
+    if (this.staffSergeant?.active) this.staffSergeant.setMoveTarget(x, y);
   }
 
   update(dt, allUnits, factionMgr) {

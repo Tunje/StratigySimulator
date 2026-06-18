@@ -124,6 +124,7 @@ export class Officer {
       const off = (i - (active.length - 1) / 2) * ATTACK_SPREAD;
       s.setMoveTarget(x + Math.cos(perp) * off, y + Math.sin(perp) * off);
     });
+    if (this.corporal?.active) this.corporal.setMoveTarget(x, y);
   }
 
   // Captain assault order — pushes through contact using _forcedMoveTarget
@@ -149,6 +150,7 @@ export class Officer {
     this._wdrawStep   = 0;
     this._wdrawTimer  = 0;
     this._issueWithdrawStep();
+    if (this.corporal?.active) this.corporal.setMoveTarget(x, y);
   }
 
   update(dt, allUnits, factionMgr) {

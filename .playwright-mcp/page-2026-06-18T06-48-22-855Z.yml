@@ -1,0 +1,12 @@
+- generic [active] [ref=e1]:
+  - generic:
+    - generic:
+      - generic: STRATEGY SIMULATOR
+      - generic:
+        - generic: 0, 0
+        - generic: 100%
+    - generic [ref=e3]: FACTIONS
+    - generic [ref=e7]: OVERVIEW
+    - generic:
+      - generic: Hover a tile
+      - generic: WASD / drag to pan | Scroll to zoom

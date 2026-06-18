@@ -315,6 +315,36 @@ body {
   color: #4a6a8a;
 }
 
+#status-left, #status-right {
+  flex: 1;
+}
+
+#status-right {
+  text-align: right;
+}
+
 #tile-info {
   color: #7aaacc;
 }
+
+/* ── Engagement bar ── */
+#engagement-bar {
+  flex: 1;
+  text-align: center;
+  pointer-events: none;
+}
+
+#engagement-status {
+  font-size: 11px;
+  letter-spacing: 2px;
+  color: #6a8aaa;
+}
+
+#engagement-status.status-prebattle  { color: #4a6a8a; }
+#engagement-status.status-scouting   { color: #7aaacc; }
+#engagement-status.status-advancing  { color: #a0c070; }
+#engagement-status.status-contact    { color: #e8a040; }
+#engagement-status.status-hot        { color: #d47070; }
+#engagement-status.status-withdraw   { color: #cc8844; }
+#engagement-status.status-regroup    { color: #d4cc60; }
+#engagement-status.status-over       { color: #6ada88; }

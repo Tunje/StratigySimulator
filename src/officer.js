@@ -38,8 +38,9 @@ export class Officer {
     // Phase: 'moving' | 'engaging' | 'attacking' | 'holding' | 'withdrawing'
     this._sgtPhase   = 'holding';
     this._marchDir   = null;   // direction of company advance, saved from last lt move order
-    this._moveTarget = null;
+    this._moveTarget       = null;
     this._forcedMoveTarget = null;
+    this._lastTroopDest    = null; // {x,y} of last troop destination for straggler re-orders
 
     // Withdraw leapfrog state
     this._wdrawTarget = null;
@@ -113,13 +114,13 @@ export class Officer {
     this._marchDir   = Math.atan2(y - this.y, x - this.x);
     // Stay in ENGAGING if already fighting — move order is honoured but fight continues
     if (this._sgtPhase !== 'engaging') this._sgtPhase = 'moving';
-    this._moveTarget = { x: x - Math.cos(this._marchDir) * 70,
-                         y: y - Math.sin(this._marchDir) * 70 };
+    this._moveTarget    = { x: x - Math.cos(this._marchDir) * 70,
+                            y: y - Math.sin(this._marchDir) * 70 };
+    this._lastTroopDest = { x, y };
     const active = this.soldiers.filter(s => s.active);
     const perp   = this._marchDir + Math.PI / 2;
     active.forEach((s, i) => {
-      // Don't pull a soldier off their target — let them fight; they'll re-join when contact clears
-      if (s._lockedTarget) return;
+      if (s._lockedTarget) return; // don't pull off a live target — straggler logic will catch them
       const off = (i - (active.length - 1) / 2) * ATTACK_SPREAD;
       s.setMoveTarget(x + Math.cos(perp) * off, y + Math.sin(perp) * off);
     });
@@ -226,11 +227,19 @@ export class Officer {
     switch (this._sgtPhase) {
 
       case 'moving':
-        // Soldiers and sergeant advance toward lt-ordered position
-        // If squad finds contact, halt and engage
         if (anyContact) {
           this._sgtPhase   = 'engaging';
-          this._moveTarget = null; // sergeant holds
+          this._moveTarget = null;
+        } else if (this._lastTroopDest && this._marchDir !== null) {
+          // Re-order any soldier that cleared contact but has no move target
+          const { x: tx, y: ty } = this._lastTroopDest;
+          const perp   = this._marchDir + Math.PI / 2;
+          const active = this.soldiers.filter(s => s.active);
+          active.forEach((s, i) => {
+            if (s._lockedTarget || s.moveTarget) return;
+            const off = (i - (active.length - 1) / 2) * ATTACK_SPREAD;
+            s.setMoveTarget(tx + Math.cos(perp) * off, ty + Math.sin(perp) * off);
+          });
         }
         break;
 
@@ -339,8 +348,8 @@ export class Officer {
       );
     });
     this._moveTarget = {
-      x: this.x + Math.cos(this._marchDir) * (ATTACK_PUSH - 70),
-      y: this.y + Math.sin(this._marchDir) * (ATTACK_PUSH - 70),
+      x: this.x + Math.cos(this._marchDir) * (ATTACK_PUSH - 120),
+      y: this.y + Math.sin(this._marchDir) * (ATTACK_PUSH - 120),
     };
   }
 
@@ -410,7 +419,7 @@ export class Officer {
                          : null,
       troopsLost:      0,
       position:        { x: this.x, y: this.y },
-      enemyPosition:   this._lastLockedPos ? { ...this._lastLockedPos } : null,
+      enemyPosition:   this._lockedTarget ? { ...this._lastLockedPos } : null,
       hasATCapability: this.soldiers.some(s => s.active && s._isATRifleman),
       hasArmorContact: this._armorContact,
       armorContactPos: this._armorContactPos ? { ...this._armorContactPos } : null,

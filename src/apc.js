@@ -1,6 +1,6 @@
 import { addBullet, addImpact, addDeath } from './effects.js';
 
-const APC_RADIUS      = 20;
+const APC_RADIUS      = 26;
 const APC_SPEED       = 65;
 const MG_RANGE        = 200;
 const MG_DETECT       = 75;
@@ -65,6 +65,9 @@ export class APC {
     );
 
     const nearbyCount = enemies.filter(e => {
+      // Scouts (_isFleeing) and operatives (_sightRadius) are observers, not dismount triggers
+      if (e._isFleeing !== undefined) return false;
+      if (e._sightRadius !== undefined) return false;
       const dx = e.x - this.x, dy = e.y - this.y;
       return dx * dx + dy * dy < DISMOUNT_RANGE * DISMOUNT_RANGE;
     }).length;
@@ -260,14 +263,51 @@ export class APC {
   }
 
   draw(ctx, camera, showCones = true) {
-    if (this.dead) return;
-
     const zoom = camera.zoom;
     const sx   = (this.x - camera.x) * zoom;
     const sy   = (this.y - camera.y) * zoom;
     const r    = APC_RADIUS * zoom;
 
     if (sx < -200 || sy < -200 || sx > ctx.canvas.width + 200 || sy > ctx.canvas.height + 200) return;
+
+    // Dead APC — burnt-out hulk
+    if (this.dead) {
+      ctx.save();
+      ctx.translate(sx, sy);
+      ctx.rotate(this.facing);
+      ctx.fillStyle   = '#2a2a2a';
+      ctx.strokeStyle = '#111';
+      ctx.lineWidth   = Math.max(1.5, zoom * 1.5);
+      ctx.fillRect(-r * 1.05, -r * 0.6, r * 2.1, r * 1.2);
+      ctx.strokeRect(-r * 1.05, -r * 0.6, r * 2.1, r * 1.2);
+      // Burn marks along the hull sides
+      ctx.strokeStyle = 'rgba(80,40,0,0.5)';
+      ctx.lineWidth   = Math.max(1, zoom * 0.7);
+      [-r * 0.45, r * 0.45].forEach(yOff => {
+        ctx.beginPath();
+        ctx.moveTo(-r * 1.05, yOff); ctx.lineTo(r * 1.05, yOff);
+        ctx.stroke();
+      });
+      // Crooked MG mount — skewed to show it's wrecked
+      ctx.fillStyle = '#333';
+      ctx.save();
+      ctx.rotate(0.45);
+      ctx.fillRect(r * 0.2, -r * 0.12, r * 0.75, r * 0.22);
+      ctx.restore();
+      ctx.restore();
+      // Smoke — two puffs, smaller than tank
+      const smokeAlpha = 0.15 + 0.08 * Math.sin(Date.now() / 650);
+      for (let i = 0; i < 2; i++) {
+        const oy = -(r * 1.0 + i * r * 0.8);
+        const ox = Math.sin(Date.now() / 900 + i) * r * 0.25;
+        const sr = r * (0.28 + i * 0.15);
+        ctx.beginPath();
+        ctx.arc(sx + ox, sy + oy, sr, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(30,30,30,${smokeAlpha - i * 0.04})`;
+        ctx.fill();
+      }
+      return;
+    }
 
     ctx.save();
 

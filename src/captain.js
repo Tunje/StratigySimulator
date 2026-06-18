@@ -106,7 +106,7 @@ export class Medic {
           if (this._healTimer >= MEDIC_HEAL_TIME) {
             this._healTarget.state = 'active';
             this._healTarget       = null;
-            this._healTimer        = 0;
+            this._healTimer               = 0;
           }
         }
         return;
@@ -461,10 +461,12 @@ export class Captain {
     this._contactAssessTimer = 0;
     this._battleStrategy    = null;
     this._scoutDoctrine     = null; // set in _buildWaypoints
+    this._operationalOrder  = 'aggressive'; // 'aggressive' | 'cautious'
     this._lastSafeWpt       = null; // last waypoint confirmed clear
     this._rallyPoint        = null; // where to gather after battle
     this._battleStartTroops = 0;   // troop count when contact was made
     this._battleWon         = false;
+    this._defensiveSquare   = false; // true when holding with no officer chain — blocks re-engagement
     this._circleCenter      = null; // {x,y} for scout circle patrol
     this._circleAngle       = 0;
 
@@ -577,7 +579,7 @@ export class Captain {
     if (!this._hasContact) this._hasContact = true;
     // Re-engage from any non-committed phase — a scout report means enemies are real and present
     const nonCommitted = ['scouting', 'advancing', 'moving_up', 'rallying', 'holding', 'consolidating'];
-    if (nonCommitted.includes(this._phase)) {
+    if (nonCommitted.includes(this._phase) && !this._defensiveSquare) {
       this._enterContact();
     }
   }
@@ -594,12 +596,19 @@ export class Captain {
       if (lt.lastReport.armorContactPos) {
         this._armorContactPos = { ...lt.lastReport.armorContactPos };
       }
+    } else {
+      // This LT no longer sees armor — recheck all LTs; clear if none report it
+      const anyArmor = this.lieutenants.some(l => l.active && l.lastReport?.hasArmorContact);
+      if (!anyArmor) {
+        this._hasArmorContact = false;
+        this._armorContactPos = null;
+      }
     }
     this._noContactTimer = 0;
     if (!this._hasContact) this._hasContact = true;
     // Re-engage from any non-committed phase — an LT report means live contact
     const nonCommitted = ['scouting', 'advancing', 'moving_up', 'rallying', 'holding', 'consolidating'];
-    if (nonCommitted.includes(this._phase)) {
+    if (nonCommitted.includes(this._phase) && !this._defensiveSquare) {
       this._enterContact();
     }
   }
@@ -620,8 +629,11 @@ export class Captain {
     this._checkScoutPromotion();
     this._updateAttachment(dt);
 
-    // If all officers are gone but soldiers survive, emergency retreat
-    if (!['falling_back', 'emergency_retreat', 'forming', 'holding'].includes(this._phase)) {
+    // If all officers are gone but soldiers survive, emergency retreat.
+    // Excluded phases: already retreating, reordering after a retreat, or stable phases where
+    // re-triggering would cause an infinite loop. _emergencyRetreated flag resets on new contact.
+    if (!this._emergencyRetreated &&
+        !['falling_back', 'emergency_retreat', 'forming', 'holding', 'reordering'].includes(this._phase)) {
       if (!this.lieutenants.some(l => l.active) && this._hasSurvivingOrphanedSoldiers()) {
         this._triggerEmergencyRetreat();
       }
@@ -752,8 +764,21 @@ export class Captain {
         if (this._reorderTimer >= REORDER_TIME) {
           this._reformFormation();
           this._checkPromotions();
-          const remaining = this._countActiveTroops();
-          if (remaining >= Math.max(1, this._battleStartTroops * 0.20)) {
+          const remaining   = this._countActiveTroops();
+          const hasLts      = this.lieutenants.some(l => l.active);
+          const advanceMin  = this._operationalOrder === 'cautious'
+            ? this._battleStartTroops * 0.50
+            : this._battleStartTroops * 0.20;
+          if (this._emergencyRetreated && !hasLts) {
+            // No officer chain survived — hold as a defensive square; don't advance
+            this._defensiveSquare     = true;
+            this._phase               = 'holding';
+            this._holdTimer           = 0;
+            this._defensiveLineFormed = false;
+            this._tactic              = 'defensive square';
+            const holdPos = this._lastSafeWpt || { x: this.x, y: this.y };
+            this._setScoutsToCircle(holdPos.x, holdPos.y);
+          } else if (remaining >= Math.max(1, advanceMin)) {
             this._waypointIdx++;
             this._startScouting();
           } else {
@@ -787,7 +812,6 @@ export class Captain {
 
       case 'holding':
         this._tickScoutCircle(dt);
-        this._dispatchMopUpOrders();
         this._holdTimer = (this._holdTimer || 0) + dt;
         if (this._holdTimer >= 60 && !this._defensiveLineFormed) {
           this._formDefensiveLine();
@@ -799,6 +823,21 @@ export class Captain {
           this._phase  = 'consolidating';
           this._tactic = 'consolidate';
           this._dispatchConsolidation();
+          break;
+        }
+        // Reassess every 30 s — if clearly outnumbering the enemy, stop holding and re-engage
+        this._holdReassessTimer = (this._holdReassessTimer || 0) + dt;
+        if (!this._defensiveSquare && this._holdReassessTimer >= 30) {
+          this._holdReassessTimer = 0;
+          const now          = Date.now() / 1000;
+          const recent       = this._sightings.filter(s => now - s.time < 60);
+          const enemyEst     = recent.reduce((s, sig) => s + (sig.count || 1), 0);
+          const myStrength   = this._countActiveTroops();
+          if (enemyEst > 0 && myStrength > enemyEst * 2.0) {
+            this.lieutenants.filter(l => l.active).forEach(l => { l._captainOrderedHold = false; });
+            this._noContactTimer = 0;
+            this._enterContact();
+          }
         }
         break;
 
@@ -815,10 +854,14 @@ export class Captain {
           this._orderOrphanedSoldiersTo(this._retreatDest);
         }
         if (!this._moveTarget) {
-          this._phase               = 'holding';
-          this._holdTimer           = 0;
-          this._defensiveLineFormed = false;
-          this._tactic = 'hold';
+          // Transition straight into reordering so promotions fire and the company reconstitutes.
+          // _emergencyRetreated stays true through reordering to prevent re-triggering;
+          // it is cleared the next time the captain makes contact with a new engagement.
+          this._reorderTimer        = 0;
+          this._lastReorderPulse    = 0;
+          this._battleStartTroops   = Math.max(1, this._countActiveTroops());
+          this._phase               = 'reordering';
+          this._tactic              = 'regroup after retreat';
           this._setScoutsToCircle(this.x, this.y);
         }
         break;
@@ -1002,8 +1045,12 @@ export class Captain {
       this._waypoints.push({ x: this.x + dx * t, y: this.y + dy * t });
     }
 
-    // Captain sets his own scout doctrine given his standing order (aggressive advance)
-    this._scoutDoctrine = { depth: 'deep', onContact: 'observe' };
+    // Captain sets his own scout doctrine given his standing order
+    if (this._operationalOrder === 'cautious') {
+      this._scoutDoctrine = { depth: 'screen', onContact: 'flee' };
+    } else {
+      this._scoutDoctrine = { depth: 'deep', onContact: 'observe' };
+    }
 
     // Each captain has a slightly different personality — affects strategy thresholds, timing, and formation
     const formations = ['line', 'refused_flank', 'two_back', 'wedge', 'echelon'];
@@ -1013,6 +1060,10 @@ export class Captain {
       marchFormation:    formations[Math.floor(Math.random() * formations.length)],
       echelonDir:        Math.random() < 0.5 ? 1 : -1,
     };
+    if (this._operationalOrder === 'cautious') {
+      this._personality.aggressionBias    = -0.3;
+      this._personality.contactAssessTime = 8.0 + Math.random() * 4.0;
+    }
     this._frontLtSet = null;
   }
 
@@ -1218,6 +1269,7 @@ export class Captain {
     this._battleStrategy     = null;
     this._tactic             = 'contact — assessing';
     this._battleStartTroops  = this._countActiveTroops();
+    this._emergencyRetreated = false; // new engagement — allow emergency retreat again if needed
 
     // Rear guard commits immediately as reinforcements toward the contact
     const activeLts = this.lieutenants.filter(l => l.active);
@@ -1606,7 +1658,9 @@ export class Captain {
 
   _executeLtPromotion(sgt, otherSgts) {
     const newLt = new Lieutenant(sgt.x, sgt.y, this.factionId, sgt.facing, this.color);
-    newLt.commandingOfficer = this;
+    newLt.commandingOfficer  = this;
+    // Inherit the captain's current hold state so the new LT doesn't immediately self-advance
+    newLt._captainOrderedHold = this._battleStrategy === 'defend';
     sgt.commandingOfficer = newLt;
     newLt.sergeants.push(sgt);
     otherSgts.forEach(s => {
@@ -1615,6 +1669,8 @@ export class Captain {
     });
     this.lieutenants.push(newLt);
     this._promotedLts.push(newLt);
+    // Officer chain re-established — square can dissolve
+    if (this._defensiveSquare) this._defensiveSquare = false;
   }
 
   _reconstitute() {
@@ -1751,20 +1807,20 @@ export class Captain {
     const bias         = this._personality?.aggressionBias ?? 0;
     const troopRatio   = myStrength / Math.max(1, this._battleStartTroops);
 
+    const cautious = this._operationalOrder === 'cautious';
     const continueValid = (() => {
       switch (this._battleStrategy) {
-        case 'envelop':
-          // Flanking still makes sense: not outnumbered, not badly mauled,
-          // and the enemy flank is actually still open (sightings don't wrap
-          // around our own flanking lieutenants, meaning the enemy hasn't
-          // pivoted to face them).
-          if (troopRatio < 0.55 || enemyEst > myStrength * (1.3 - bias) || clusters >= 3) return false;
+        case 'envelop': {
+          const ratioFloor = cautious ? 0.65 : 0.55;
+          if (troopRatio < ratioFloor || enemyEst > myStrength * (1.3 - bias) || clusters >= 3) return false;
           return this._flankingIsViable(recent);
-        case 'assault':
-          // Frontal still makes sense: we have numerical edge and aren't bleeding out
-          return troopRatio >= 0.65 && myStrength > enemyEst * (1.4 - bias);
+        }
+        case 'assault': {
+          const ratioFloor  = cautious ? 0.80 : 0.65;
+          const strengthMul = cautious ? 1.6  : 1.4;
+          return troopRatio >= ratioFloor && myStrength > enemyEst * (strengthMul - bias);
+        }
         case 'defend':
-          // Defence still makes sense: enemy pressure is still high
           return enemyEst > myStrength * (0.6 - bias) || clusters >= 2;
         default:
           return false;
@@ -1783,13 +1839,22 @@ export class Captain {
     if (!this._applyAdvisorIfConfident()) this._pickAndExecuteBattleStrategy();
   }
 
+  setOrder(type) {
+    this._operationalOrder = type;
+  }
+
   _pickAndExecuteBattleStrategy() {
     if (this._applyAdvisorIfConfident()) return;
     const now      = Date.now() / 1000;
     const recent   = this._sightings.filter(s => now - s.time < 10);
     const clusters = this._countContactClusters(recent, 500);
-    const myStrength  = this._countActiveTroops();
+    const myStrength    = this._countActiveTroops();
     const enemyEstimate = recent.reduce((s, sig) => s + (sig.count || 1), 0);
+
+    if (this._operationalOrder === 'cautious') {
+      this._pickCautiousStrategy(myStrength, enemyEstimate, clusters);
+      return;
+    }
 
     const bias = this._personality?.aggressionBias ?? 0;
     if (clusters >= 3 || enemyEstimate > myStrength * (1.2 - bias)) {
@@ -1802,6 +1867,22 @@ export class Captain {
       this._battleStrategy = 'envelop';
       this._orderFlanking();
       this._tactic = 'hasty envelopment';
+    }
+  }
+
+  _pickCautiousStrategy(myStrength, enemyEstimate, clusters) {
+    // Form a frontline first — hold ground before committing to anything
+    this._formDefensiveLine();
+    if (clusters >= 2 || enemyEstimate > myStrength * 0.9) {
+      this._battleStrategy = 'defend';
+      this._orderHoldAndDefend();
+    } else if (myStrength > enemyEstimate * 2.0) {
+      this._battleStrategy = 'assault';
+      this._orderFrontalAssault();
+    } else {
+      this._battleStrategy = 'envelop';
+      this._orderFlanking();
+      this._tactic = 'deliberate envelopment';
     }
   }
 
@@ -1893,8 +1974,9 @@ export class Captain {
   }
 
   _triggerEmergencyRetreat() {
-    this._phase  = 'emergency_retreat';
-    this._tactic = 'emergency retreat';
+    this._phase              = 'emergency_retreat';
+    this._tactic             = 'emergency retreat';
+    this._emergencyRetreated = true; // prevents re-triggering until next contact
 
     const dest = this._lastSafeWpt || {
       x: this.x - Math.cos(this._marchDir) * 800,
@@ -1929,6 +2011,14 @@ export class Captain {
       } else if (!lt.active && lt.soldiers) {
         for (const sol of lt.soldiers) {
           if (sol.active) orphans.push(sol);
+        }
+      }
+    }
+    // Also sweep dismounted APC squads — their sergeants have no LT parent
+    for (const unit of this._attachmentUnits) {
+      if (unit._sergeant?.active) {
+        for (const sol of (unit._sergeant.soldiers || [])) {
+          if (sol.active && !sol._mounted) orphans.push(sol);
         }
       }
     }

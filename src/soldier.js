@@ -40,6 +40,7 @@ export class Soldier {
 
     this._shootCooldown  = rand(0.5, FIRE_RATE_MAX);
     this._underFireTimer = 0;
+    this._injuredTimer   = 0;
     this._isMoving       = false;
     this._speedMult      = 0.88 + Math.random() * 0.24; // ±12% speed variance
     this.moveTarget      = null; // { x, y } — set by officer orders
@@ -83,6 +84,10 @@ export class Soldier {
   }
 
   update(dt, allUnits, factionMgr) {
+    if (this.injured) {
+      this._injuredTimer += dt;
+      if (this._injuredTimer >= 300) { this.state = 'dead'; return; }
+    }
     if (!this.active) return;
 
     this._isMoving = false;
@@ -237,7 +242,8 @@ export class Soldier {
         target.state = 'dead';
         addDeath(target.x, target.y, target.color);
       } else {
-        target.state = 'injured';
+        target.state         = 'injured';
+        target._injuredTimer = 0;
       }
     }
   }

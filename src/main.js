@@ -128,6 +128,7 @@ function createAttachment(cpt, x, y, factionId, facing, color) {
       }
       apc._sergeant = sgt;
       sgt._mounted  = true;
+      sgt.commandingOfficer = cpt;
       sgt.soldiers.forEach(s => { s._mounted = true; });
     }
     platoon.apcs.forEach(a => a.commandingOfficer = cpt);
@@ -188,7 +189,7 @@ function makeCompany(cy, factionId, facing, color) {
   const cpt = new Captain(cptX, cy, factionId, facing, color);
   lts.forEach(lt => cpt.attach(lt));
   compScouts.forEach(s => cpt.attachScout(s));
-  cpt.setObjective(CX, cy, 'center');
+  cpt.setObjective(CX - sign * 3800, cy, 'center');
 
   const ro = new RadioOperator(cptX, cy, factionId, facing, color);
   cpt.attachRadioOperator(ro);
@@ -568,6 +569,46 @@ function updateHUD() {
   zoomEl.textContent   = `${Math.round(camera.zoom * 100)}%`;
 }
 
+const engagementEl = document.getElementById('engagement-status');
+
+function phaseLabel(cpt) {
+  if (!cpt) return null;
+  const factionUnits = allUnits.filter(u => u.factionId === cpt.factionId);
+  const anyActive = factionUnits.some(u => u.active);
+  if (!anyActive) return { text: 'DEFEATED', cls: 'status-over' };
+  switch (cpt._phase) {
+    case 'forming':          return { text: 'FORMING',    cls: 'status-prebattle' };
+    case 'scouting':         return { text: 'SCOUTING',   cls: 'status-scouting'  };
+    case 'advancing':
+    case 'moving_up':        return { text: 'ADVANCING',  cls: 'status-advancing' };
+    case 'contact':          return { text: 'CONTACT',    cls: 'status-contact'   };
+    case 'flanking':         return { text: 'FLANKING',   cls: 'status-hot'       };
+    case 'mopping_up':       return { text: 'MOPPING UP', cls: 'status-advancing' };
+    case 'rallying':         return { text: 'RALLYING',   cls: 'status-regroup'   };
+    case 'reordering':       return { text: 'REORDERING', cls: 'status-regroup'   };
+    case 'falling_back':     return { text: 'FALLING BACK', cls: 'status-withdraw' };
+    case 'holding':          return { text: 'HOLDING',    cls: 'status-scouting'  };
+    case 'emergency_retreat':return { text: 'EMERGENCY',  cls: 'status-hot'       };
+    default:                 return { text: cpt._phase?.toUpperCase() ?? '—', cls: '' };
+  }
+}
+
+function updateEngagementBar() {
+  const r = phaseLabel(crimsonCpt);
+  const a = phaseLabel(azureCpt);
+  const rText = r ? `<span style="color:#c85050">${r.text}</span>` : '';
+  const aText = a ? `<span style="color:#5090c8">${a.text}</span>` : '';
+  const sep   = (r && a) ? '<span style="color:#2a4a6a"> &nbsp;|&nbsp; </span>' : '';
+
+  // Overall dominant class — hot > contact > withdraw > regroup > advancing > scouting > prebattle > over
+  const order = ['status-hot','status-contact','status-withdraw','status-regroup','status-advancing','status-scouting','status-prebattle','status-over'];
+  const classes = [r?.cls, a?.cls].filter(Boolean);
+  const dominant = order.find(c => classes.includes(c)) ?? '';
+
+  engagementEl.className = dominant;
+  engagementEl.innerHTML = (rText || aText) ? `${rText}${sep}${aText}` : '—';
+}
+
 // ── Game loop ─────────────────────────────────────────────────────────────────
 let lastTime = 0;
 
@@ -616,6 +657,7 @@ function frame(timestamp) {
   drawSelectionOverlay();
   drawHover();
   updateHUD();
+  updateEngagementBar();
   updateFactionPanel();
   updateReportPanel('crimson', crimsonCpt);
   updateReportPanel('azure',   azureCpt);

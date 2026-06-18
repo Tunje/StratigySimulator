@@ -38,6 +38,7 @@ export class Lieutenant {
 
     this._tactic                = null;
     this._captainOrderedAssault = false;
+    this._captainOrderedHold    = false;
     this._hasContact            = false;
     this._assessTimer        = rand(2.0, 4.0);
     this._moveTarget         = null;
@@ -109,13 +110,14 @@ export class Lieutenant {
 
   setMoveTarget(x, y) {
     if (!this.active) return;
+    this._captainOrderedHold = false; // captain gave a move order — autonomous consolidation allowed again
     const angle           = Math.atan2(y - this.y, x - this.x);
     const activeSergeants = this.sergeants.filter(s => s.active);
-    const aheadX          = x + Math.cos(angle) * 80;
-    const aheadY          = y + Math.sin(angle) * 80;
-    const positions       = spreadPositions(aheadX, aheadY, angle, SQUAD_SPREAD, activeSergeants.length);
+    // Spread sergeants at the ordered position; LT stays 150px behind them
+    const positions = spreadPositions(x, y, angle, SQUAD_SPREAD, activeSergeants.length);
     activeSergeants.forEach((sgt, i) => sgt.setMoveTarget(positions[i].x, positions[i].y));
-    this._moveTarget = { x, y };
+    this._moveTarget = { x: x - Math.cos(angle) * 150,
+                         y: y - Math.sin(angle) * 150 };
   }
 
   // Captain assault order — advances LT despite being in contact;
@@ -124,13 +126,15 @@ export class Lieutenant {
   // they move+fight rather than leapfrog-withdraw.
   orderAssault(x, y) {
     if (!this.active) return;
-    this._forcedMoveTarget      = { x, y };
     this._captainOrderedAssault = true;
+    this._captainOrderedHold    = false;
     const angle           = Math.atan2(y - this.y, x - this.x);
+    // LT advances to 250px short of the contact point — sergeants close the last stretch
+    this._forcedMoveTarget = { x: x - Math.cos(angle) * 250,
+                               y: y - Math.sin(angle) * 250 };
     const activeSergeants = this.sergeants.filter(s => s.active);
-    const aheadX          = x + Math.cos(angle) * 80;
-    const aheadY          = y + Math.sin(angle) * 80;
-    const positions       = spreadPositions(aheadX, aheadY, angle, SQUAD_SPREAD, activeSergeants.length);
+    // Sergeants ordered to the actual contact position; their own 70px offset keeps them short
+    const positions = spreadPositions(x, y, angle, SQUAD_SPREAD, activeSergeants.length);
     activeSergeants.forEach((sgt, i) => sgt.orderAssault(positions[i].x, positions[i].y));
     this._tactic = 'attack';
   }
@@ -139,6 +143,7 @@ export class Lieutenant {
   recallTo(x, y) {
     if (!this.active) return;
     this._captainOrderedAssault = false;
+    this._captainOrderedHold    = true;
     this._forcedMoveTarget = { x, y };
     const angle           = Math.atan2(y - this.y, x - this.x);
     const activeSergeants = this.sergeants.filter(s => s.active);
@@ -320,7 +325,8 @@ export class Lieutenant {
     }
 
     if (this._knownActiveEnemies === 0) {
-      if (this._hasContact && this._tactic !== 'consolidate' && this._tactic !== 'advance') {
+      this._enemyCentroid = null; // no live enemies — clear so stale position isn't reported up
+      if (this._hasContact && !this._captainOrderedHold && this._tactic !== 'consolidate' && this._tactic !== 'advance') {
         this._tactic           = 'consolidate';
         this._consolidateTimer = rand(8, 15);
         const activeSgts = this.sergeants.filter(s => s.active);
@@ -405,7 +411,7 @@ export class Lieutenant {
     let tactic;
     if (totalTroops < this._knownActiveEnemies * 0.8) {
       tactic = 'fallback';
-    } else if (totalTroops > this._knownActiveEnemies * attackThreshold) {
+    } else if (!this._captainOrderedHold && totalTroops > this._knownActiveEnemies * attackThreshold) {
       tactic = 'attack';
     } else {
       tactic = 'hold';
@@ -455,7 +461,7 @@ export class Lieutenant {
       (sum, sgt) => sum + sgt.soldiers.filter(s => s.active).length, 0
     );
 
-    if (totalTroops > 0 && this._enemyCentroid) {
+    if (totalTroops > 0 && this._enemyCentroid && !this._captainOrderedHold) {
       this._tactic = 'advance';
       const toEnemy = Math.atan2(
         this._enemyCentroid.y - this.y,
